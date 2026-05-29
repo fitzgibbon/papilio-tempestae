@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.18"
-noiz = "0.4"
-wgpu = "29"
+bevy = "*"
+noiz = "*"
+wgpu = "*"
