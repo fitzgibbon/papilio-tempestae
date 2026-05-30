@@ -99,8 +99,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let h_above_surface = max(0.0, dist_to_cam - globals.planet_radius);
 
     // Calculate subdivision level (12 distinct levels of detail, max increased by 8x to 320)
-    var LOD_SEGMENTS = array<u32, 12>(1u, 2u, 4u, 8u, 16u, 28u, 48u, 80u, 128u, 180u, 240u, 320u);
-    let t_val = clamp(1.0 - h_above_surface / 2.0, 0.0, 1.0);
+    var LOD_SEGMENTS = array<u32, 12>(2u, 4u, 6u, 8u, 12u, 16u, 24u, 36u, 54u, 90u, 160u, 320u);
+    let t_val = clamp(1.0 - h_above_surface / 6.0, 0.0, 1.0);
     let index = u32(clamp(t_val * 11.0, 0.0, 11.0));
     let S = LOD_SEGMENTS[index];
 
