@@ -106,11 +106,11 @@ fn setup_scene(mut commands: Commands) {
         Transform::from_rotation(Quat::from_rotation_x(-0.5)),
     ));
 
-    // Spawn 3D camera with near projection plane set to 0.01 to prevent near-plane clipping
+    // Spawn 3D camera with near projection plane set to 0.0005 to prevent near-plane clipping
     commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
-            near: 0.01,
+            near: 0.0005,
             ..default()
         }),
         Transform::from_xyz(0.0, 0.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -182,7 +182,7 @@ fn update_camera_and_state(
     }
     let zoom_speed = 0.08 * camera_state.distance.max(0.15);
     camera_state.distance -= scroll * zoom_speed;
-    camera_state.distance = camera_state.distance.clamp(0.0, camera_state.max_distance);
+    camera_state.distance = camera_state.distance.clamp(0.002, camera_state.max_distance);
 
     // Orbit with left click drag
     if mouse_buttons.pressed(MouseButton::Left) {
