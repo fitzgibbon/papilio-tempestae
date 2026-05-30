@@ -23,7 +23,7 @@ const NOISE_AMPLITUDE: f32 = 0.10;
 
 // Maximum buffer capacities scaled up by 32x to support high LOD levels safely
 const MAX_VERTICES: usize = 65536 * 32; // 2,097,152 vertices
-const MAX_QUEUE_SIZE: usize = 262144; // 262,144 triangles max queue size
+const MAX_QUEUE_SIZE: usize = 524288; // 524,288 triangles max queue size
 
 fn main() {
     App::new()
@@ -143,7 +143,7 @@ fn update_camera_and_state(
     };
 
     let height_prev = get_height_at(pos_unit_prev);
-    let min_allowed_prev = height_prev + 1.20; // Keep camera at least 1.20 units above surface
+    let min_allowed_prev = height_prev + 0.30; // Keep camera at least 0.30 units above surface
     let was_at_min = camera_state.distance <= min_allowed_prev + 0.01;
 
     // Zoom with scroll wheel (proportional zoom speed for smooth descent)
@@ -184,7 +184,7 @@ fn update_camera_and_state(
     let pos_unit = Vec3::new(x_u, y_u, z_u);
 
     let height = get_height_at(pos_unit);
-    let min_allowed = height + 1.20;
+    let min_allowed = height + 0.30;
 
     // Snapping/Clamping logic:
     // If we were previously at the minimum height and did not scroll out, follow the surface exactly.
@@ -231,10 +231,10 @@ fn update_camera_and_state(
 
     // Target direction from planet center
     let target_dir = (local_up * target_angle.cos() + local_forward * target_angle.sin()).normalize();
-    // Evaluate actual displaced height at target direction and add safety elevation (+0.15) to prevent looking under the shell
+    // Evaluate actual displaced height at target direction and add safety elevation (+0.05) to prevent looking under the shell
     let target_p = target_dir * NOISE_FREQUENCY;
     let target_noise = planet_shader::snoise3(planet_shader::glam::Vec3::new(target_p.x, target_p.y, target_p.z));
-    let target_height = r + target_noise * NOISE_AMPLITUDE + 0.15;
+    let target_height = r + target_noise * NOISE_AMPLITUDE + 0.05;
     let target_pos = target_dir * target_height;
 
     // Look direction is from the camera to the target point
@@ -404,9 +404,9 @@ fn init_gpu_resources(
         mapped_at_creation: false,
     });
 
-    // Static uniform buffers for depth 0..7
+    // Static uniform buffers for depth 0..9
     let mut pass_buffers = Vec::new();
-    for depth in 0..7 {
+    for depth in 0..9 {
         let buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some(&format!("Planet Pass Uniforms Depth {}", depth)),
             size: 16,
@@ -758,8 +758,8 @@ impl render_graph::Node for PlanetRenderNode {
             return Ok(());
         };
 
-        // 1. Run 7 sequential compute passes to subdivide dynamically
-        for k in 0..7 {
+        // 1. Run 9 sequential compute passes to subdivide dynamically
+        for k in 0..9 {
             let (input_queue, output_queue, input_counter, output_counter) = if k % 2 == 0 {
                 (
                     &resources.queue_a,
