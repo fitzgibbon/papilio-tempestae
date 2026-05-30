@@ -19,7 +19,7 @@ const SHADER_RENDER_PATH: &str = "shaders/render_shaders.wgsl";
 
 // Shader configuration constants
 const NOISE_FREQUENCY: f32 = 1.5;
-const NOISE_AMPLITUDE: f32 = 0.10;
+const NOISE_AMPLITUDE: f32 = 0.20;
 const LOD_SPLIT_FACTOR: f32 = 45.0;
 
 // Maximum buffer capacities scaled up by 32x to support high LOD levels safely
