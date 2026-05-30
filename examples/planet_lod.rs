@@ -59,7 +59,7 @@ impl Plugin for PlanetRenderPlugin {
             max_distance: 13.0,
         })
         .add_systems(Startup, setup_scene)
-        .add_systems(Update, update_camera_and_state);
+        .add_systems(Update, (update_camera_and_state, update_ui));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -93,6 +93,9 @@ impl Plugin for PlanetRenderPlugin {
     }
 }
 
+#[derive(Component)]
+struct AltitudeText;
+
 fn setup_scene(mut commands: Commands) {
     // Spawn directional light representing the sun
     commands.spawn((
@@ -113,6 +116,42 @@ fn setup_scene(mut commands: Commands) {
         Transform::from_xyz(0.0, 0.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
         Msaa::Off,
     ));
+
+    // Spawn UI Text for Altitude Overlay
+    commands.spawn((
+        Text::new("Intended Altitude: 0.0000\nActual Altitude: 0.0000"),
+        TextFont {
+            font_size: 20.0,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(15.0),
+            left: Val::Px(15.0),
+            ..default()
+        },
+        AltitudeText,
+    ));
+}
+
+fn update_ui(
+    camera_state: Res<PlanetCameraState>,
+    camera_query: Query<&Transform, With<Camera3d>>,
+    mut text_query: Query<&mut Text, With<AltitudeText>>,
+) {
+    let Ok(camera_transform) = camera_query.get_single() else {
+        return;
+    };
+    let actual_alt = camera_transform.translation.length() - 2.0;
+    let intended_alt = camera_state.distance;
+
+    for mut text in text_query.iter_mut() {
+        text.0 = format!(
+            "Intended Altitude: {:.4}\nActual Altitude: {:.4}",
+            intended_alt, actual_alt
+        );
+    }
 }
 
 fn update_camera_and_state(
