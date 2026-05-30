@@ -140,7 +140,7 @@ fn update_ui(
     camera_query: Query<&Transform, With<Camera3d>>,
     mut text_query: Query<&mut Text, With<AltitudeText>>,
 ) {
-    let Ok(camera_transform) = camera_query.get_single() else {
+    let Ok(camera_transform) = camera_query.single() else {
         return;
     };
     let actual_alt = camera_transform.translation.length() - 2.0;
