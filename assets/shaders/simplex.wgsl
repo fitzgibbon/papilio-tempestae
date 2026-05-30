@@ -23,14 +23,14 @@ fn snoise3_shared(param: Vec3Shared) -> f32 {
     var phi_1345_: bool;
     var phi_1360_: bool;
     var phi_1375_: bool;
-    var phi_1427_: type_1;
-    var phi_1429_: type_1;
-    var phi_1532_: type_1;
-    var phi_1534_: type_1;
-    var phi_1637_: type_1;
-    var phi_1639_: type_1;
-    var phi_1742_: type_1;
-    var phi_1744_: type_1;
+    var phi_1427_: Vec3Shared;
+    var phi_1429_: Vec3Shared;
+    var phi_1532_: Vec3Shared;
+    var phi_1534_: Vec3Shared;
+    var phi_1637_: Vec3Shared;
+    var phi_1639_: Vec3Shared;
+    var phi_1742_: Vec3Shared;
+    var phi_1744_: Vec3Shared;
 
     let _e35 = (0.6666667f * ((param.member + param.member_1) + param.member_2));
     let _e36 = (_e35 - param.member);
@@ -238,12 +238,12 @@ fn snoise3_shared(param: Vec3Shared) -> f32 {
     let _e430 = floor((_e350 * 0.0625f));
     let _e437 = select(0i, select(select(i32(_e430), i32(-2147483648), (_e430 < -2147483600f)), 2147483647i, (_e430 > 2147483500f)), (_e430 == _e430));
     if (_e437 == 0i) {
-        phi_1429_ = type_1(0f, _e422, _e428);
+        phi_1429_ = Vec3Shared(0f, _e422, _e428);
     } else {
         if (_e437 == 1i) {
-            phi_1427_ = type_1(_e416, 0f, _e428);
+            phi_1427_ = Vec3Shared(_e416, 0f, _e428);
         } else {
-            phi_1427_ = type_1(_e416, _e422, 0f);
+            phi_1427_ = Vec3Shared(_e416, _e422, 0f);
         }
         let _e444 = phi_1427_;
         phi_1429_ = _e444;
@@ -262,12 +262,12 @@ fn snoise3_shared(param: Vec3Shared) -> f32 {
     let _e514 = floor((_e351 * 0.0625f));
     let _e521 = select(0i, select(select(i32(_e514), i32(-2147483648), (_e514 < -2147483600f)), 2147483647i, (_e514 > 2147483500f)), (_e514 == _e514));
     if (_e521 == 0i) {
-        phi_1534_ = type_1(0f, _e506, _e512);
+        phi_1534_ = Vec3Shared(0f, _e506, _e512);
     } else {
         if (_e521 == 1i) {
-            phi_1532_ = type_1(_e500, 0f, _e512);
+            phi_1532_ = Vec3Shared(_e500, 0f, _e512);
         } else {
-            phi_1532_ = type_1(_e500, _e506, 0f);
+            phi_1532_ = Vec3Shared(_e500, _e506, 0f);
         }
         let _e528 = phi_1532_;
         phi_1534_ = _e528;
@@ -286,12 +286,12 @@ fn snoise3_shared(param: Vec3Shared) -> f32 {
     let _e598 = floor((_e352 * 0.0625f));
     let _e605 = select(0i, select(select(i32(_e598), i32(-2147483648), (_e598 < -2147483600f)), 2147483647i, (_e598 > 2147483500f)), (_e598 == _e598));
     if (_e605 == 0i) {
-        phi_1639_ = type_1(0f, _e590, _e596);
+        phi_1639_ = Vec3Shared(0f, _e590, _e596);
     } else {
         if (_e605 == 1i) {
-            phi_1637_ = type_1(_e584, 0f, _e596);
+            phi_1637_ = Vec3Shared(_e584, 0f, _e596);
         } else {
-            phi_1637_ = type_1(_e584, _e590, 0f);
+            phi_1637_ = Vec3Shared(_e584, _e590, 0f);
         }
         let _e612 = phi_1637_;
         phi_1639_ = _e612;
@@ -310,12 +310,12 @@ fn snoise3_shared(param: Vec3Shared) -> f32 {
     let _e682 = floor((_e353 * 0.0625f));
     let _e689 = select(0i, select(select(i32(_e682), i32(-2147483648), (_e682 < -2147483600f)), 2147483647i, (_e682 > 2147483500f)), (_e682 == _e682));
     if (_e689 == 0i) {
-        phi_1744_ = type_1(0f, _e674, _e680);
+        phi_1744_ = Vec3Shared(0f, _e674, _e680);
     } else {
         if (_e689 == 1i) {
-            phi_1742_ = type_1(_e668, 0f, _e680);
+            phi_1742_ = Vec3Shared(_e668, 0f, _e680);
         } else {
-            phi_1742_ = type_1(_e668, _e674, 0f);
+            phi_1742_ = Vec3Shared(_e668, _e674, 0f);
         }
         let _e696 = phi_1742_;
         phi_1744_ = _e696;

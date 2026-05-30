@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let func_end = wgsl_code.find("fn function_1(").ok_or("Could not find function_1 definition")?;
     let func_def = wgsl_code[func_start..func_end].trim()
         .replace("fn function(", "fn snoise3_shared(")
-        .replace("param: type_1", "param: Vec3Shared");
+        .replace("type_1", "Vec3Shared");
 
     // Combine into a clean output file
     let final_wgsl = format!(
