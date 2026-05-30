@@ -21,9 +21,9 @@ const SHADER_RENDER_PATH: &str = "shaders/render_shaders.wgsl";
 const NOISE_FREQUENCY: f32 = 1.5;
 const NOISE_AMPLITUDE: f32 = 0.10;
 
-// Maximum buffer capacities scaled up by 32x to support 8x LOD segments safely
+// Maximum buffer capacities scaled up by 32x to support high LOD levels safely
 const MAX_VERTICES: usize = 65536 * 32; // 2,097,152 vertices
-const MAX_INDICES: usize = 131072 * 32; // 4,194,304 indices
+const MAX_QUEUE_SIZE: usize = 262144; // 262,144 triangles max queue size
 
 fn main() {
     App::new()
@@ -208,12 +208,28 @@ struct ViewUniform {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Zeroable, Pod)]
-struct DrawIndexedIndirect {
-    index_count: u32,
+struct DrawIndirect {
+    vertex_count: u32,
     instance_count: u32,
-    first_index: u32,
-    base_vertex: i32,
+    first_vertex: u32,
     first_instance: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Zeroable, Pod)]
+struct PassUniforms {
+    depth: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Zeroable, Pod)]
+struct GpuTriangle {
+    v0: [f32; 4],
+    v1: [f32; 4],
+    v2: [f32; 4],
 }
 
 #[derive(Resource)]
@@ -225,9 +241,13 @@ struct PlanetPipeline {
 #[derive(Resource)]
 struct PlanetGpuResources {
     vertex_buffer: Buffer,
-    index_buffer: Buffer,
     indirect_buffer: Buffer,
-    vertex_counter_buffer: Buffer,
+    base_faces_buffer: Buffer,
+    queue_a: Buffer,
+    queue_b: Buffer,
+    counter_a: Buffer,
+    counter_b: Buffer,
+    pass_buffers: Vec<Buffer>,
 }
 
 #[derive(Resource, Default)]
@@ -236,6 +256,7 @@ struct RenderGlobalsUniform(UniformBuffer<GlobalsUniform>);
 #[derive(Resource, Default)]
 struct RenderViewUniform(UniformBuffer<ViewUniform>);
 
+#[allow(clippy::excessive_precision)]
 fn init_gpu_resources(
     mut commands: Commands,
     render_device: Res<RenderDevice>,
@@ -254,33 +275,100 @@ fn init_gpu_resources(
         mapped_at_creation: false,
     });
 
-    let index_buffer = render_device.create_buffer(&BufferDescriptor {
-        label: Some("Planet Index Buffer"),
-        size: (MAX_INDICES * 4) as u64,
-        usage: BufferUsages::STORAGE | BufferUsages::INDEX,
-        mapped_at_creation: false,
-    });
-
-    // Indirect Arguments Buffer (20 bytes)
+    // Indirect Arguments Buffer (16 bytes)
     let indirect_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("Planet Indirect Arguments Buffer"),
-        size: 20,
+        size: 16,
         usage: BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
-    // Vertex Counter Buffer (4 bytes)
-    let vertex_counter_buffer = render_device.create_buffer(&BufferDescriptor {
-        label: Some("Planet Vertex Counter Buffer"),
+    // 20 Base icosahedron faces
+    let x = 0.5257311121191336_f32;
+    let z = 0.8506508083520399_f32;
+    let base_vertices = [
+        Vec3::new(-x, z, 0.0), Vec3::new(x, z, 0.0), Vec3::new(-x, -z, 0.0), Vec3::new(x, -z, 0.0),
+        Vec3::new(0.0, -x, z), Vec3::new(0.0, x, z), Vec3::new(0.0, -x, -z), Vec3::new(0.0, x, -z),
+        Vec3::new(z, 0.0, -x), Vec3::new(z, 0.0, x), Vec3::new(-z, 0.0, -x), Vec3::new(-z, 0.0, x)
+    ];
+    let base_faces = [
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
+    ];
+
+    let mut base_triangles = Vec::new();
+    for face in base_faces {
+        base_triangles.push(GpuTriangle {
+            v0: base_vertices[face[0]].extend(0.0).to_array(),
+            v1: base_vertices[face[1]].extend(0.0).to_array(),
+            v2: base_vertices[face[2]].extend(0.0).to_array(),
+        });
+    }
+
+    let base_faces_buffer = render_device.create_buffer(&BufferDescriptor {
+        label: Some("Planet Base Faces Buffer"),
+        size: 960,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    render_queue.write_buffer(&base_faces_buffer, 0, bytemuck::cast_slice(&base_triangles));
+
+    // Intermediate queues (Ping-Pong buffers)
+    let queue_a = render_device.create_buffer(&BufferDescriptor {
+        label: Some("Planet Queue A"),
+        size: (MAX_QUEUE_SIZE * 48) as u64,
+        usage: BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+
+    let queue_b = render_device.create_buffer(&BufferDescriptor {
+        label: Some("Planet Queue B"),
+        size: (MAX_QUEUE_SIZE * 48) as u64,
+        usage: BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+
+    // Counters for intermediate queues
+    let counter_a = render_device.create_buffer(&BufferDescriptor {
+        label: Some("Planet Counter A"),
         size: 4,
         usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
-    // Bind group layouts using vectors and static cows
+    let counter_b = render_device.create_buffer(&BufferDescriptor {
+        label: Some("Planet Counter B"),
+        size: 4,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // Static uniform buffers for depth 0..7
+    let mut pass_buffers = Vec::new();
+    for depth in 0..7 {
+        let buffer = render_device.create_buffer(&BufferDescriptor {
+            label: Some(&format!("Planet Pass Uniforms Depth {}", depth)),
+            size: 16,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let pass_uniforms = PassUniforms {
+            depth: depth as u32,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
+        };
+        render_queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&pass_uniforms));
+        pass_buffers.push(buffer);
+    }
+
+    // Bind group layouts
     let compute_layout = BindGroupLayoutDescriptor {
         label: std::borrow::Cow::Borrowed("Planet Compute Bind Group Layout"),
         entries: vec![
+            // 0: Globals
             BindGroupLayoutEntry {
                 binding: 0,
                 visibility: ShaderStages::COMPUTE,
@@ -291,6 +379,7 @@ fn init_gpu_resources(
                 },
                 count: None,
             },
+            // 1: out_vertices
             BindGroupLayoutEntry {
                 binding: 1,
                 visibility: ShaderStages::COMPUTE,
@@ -301,6 +390,7 @@ fn init_gpu_resources(
                 },
                 count: None,
             },
+            // 2: indirect_args
             BindGroupLayoutEntry {
                 binding: 2,
                 visibility: ShaderStages::COMPUTE,
@@ -311,8 +401,31 @@ fn init_gpu_resources(
                 },
                 count: None,
             },
+            // 3: PassUniforms
             BindGroupLayoutEntry {
                 binding: 3,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 4: base_faces (read-only storage)
+            BindGroupLayoutEntry {
+                binding: 4,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 5: input_queue
+            BindGroupLayoutEntry {
+                binding: 5,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only: false },
@@ -321,8 +434,31 @@ fn init_gpu_resources(
                 },
                 count: None,
             },
+            // 6: output_queue
             BindGroupLayoutEntry {
-                binding: 4,
+                binding: 6,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 7: input_counter (read-only storage)
+            BindGroupLayoutEntry {
+                binding: 7,
+                visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // 8: output_counter
+            BindGroupLayoutEntry {
+                binding: 8,
                 visibility: ShaderStages::COMPUTE,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Storage { read_only: false },
@@ -421,9 +557,13 @@ fn init_gpu_resources(
 
     commands.insert_resource(PlanetGpuResources {
         vertex_buffer,
-        index_buffer,
         indirect_buffer,
-        vertex_counter_buffer,
+        base_faces_buffer,
+        queue_a,
+        queue_b,
+        counter_a,
+        counter_b,
+        pass_buffers,
     });
 }
 
@@ -496,16 +636,14 @@ fn prepare_uniforms(
     render_view.0.set(view);
     render_view.0.write_buffer(&render_device, &render_queue);
 
-    // Reset dynamic counters on the GPU
-    let zero_args = DrawIndexedIndirect {
-        index_count: 0,
+    // Reset dynamic indirect arguments buffer on the GPU
+    let zero_args = DrawIndirect {
+        vertex_count: 0,
         instance_count: 1, // Draw exactly 1 instance of the dynamic mesh
-        first_index: 0,
-        base_vertex: 0,
+        first_vertex: 0,
         first_instance: 0,
     };
     render_queue.write_buffer(&gpu_resources.indirect_buffer, 0, bytemuck::bytes_of(&zero_args));
-    render_queue.write_buffer(&gpu_resources.vertex_counter_buffer, 0, bytemuck::bytes_of(&0u32));
 }
 
 // ---------------------------------------------------------------------------
@@ -543,19 +681,6 @@ impl render_graph::Node for PlanetRenderNode {
         let compute_layout: BindGroupLayout = compute_pipeline.get_bind_group_layout(0).into();
         let render_layout: BindGroupLayout = render_pipeline.get_bind_group_layout(0).into();
 
-        // Create bind groups dynamically when layouts are resolved
-        let compute_bind_group = render_context.render_device().create_bind_group(
-            None,
-            &compute_layout,
-            &BindGroupEntries::sequential((
-                render_globals.0.binding().unwrap(),
-                resources.vertex_buffer.as_entire_buffer_binding(),
-                resources.index_buffer.as_entire_buffer_binding(),
-                resources.indirect_buffer.as_entire_buffer_binding(),
-                resources.vertex_counter_buffer.as_entire_buffer_binding(),
-            )),
-        );
-
         let render_bind_group = render_context.render_device().create_bind_group(
             None,
             &render_layout,
@@ -565,23 +690,67 @@ impl render_graph::Node for PlanetRenderNode {
             )),
         );
 
-        // Query render target and depth views
+        // Query render target and depth views safely (avoid panics on window exit)
         let view_entity = graph.view_entity();
-        let view_target = world.get::<bevy::render::view::ViewTarget>(view_entity).unwrap();
-        let view_depth = world.get::<bevy::render::view::ViewDepthTexture>(view_entity).unwrap();
+        let Some(view_target) = world.get::<bevy::render::view::ViewTarget>(view_entity) else {
+            return Ok(());
+        };
+        let Some(view_depth) = world.get::<bevy::render::view::ViewDepthTexture>(view_entity) else {
+            return Ok(());
+        };
 
-        // 1. Run Compute Pass to generate LOD subdivision and vertices
-        {
+        // 1. Run 7 sequential compute passes to subdivide dynamically
+        for k in 0..7 {
+            let (input_queue, output_queue, input_counter, output_counter) = if k % 2 == 0 {
+                (
+                    &resources.queue_a,
+                    &resources.queue_b,
+                    &resources.counter_a,
+                    &resources.counter_b,
+                )
+            } else {
+                (
+                    &resources.queue_b,
+                    &resources.queue_a,
+                    &resources.counter_b,
+                    &resources.counter_a,
+                )
+            };
+
+            // Clear output counter to 0 on GPU
+            render_context.command_encoder().clear_buffer(output_counter, 0, None);
+
+            // Create dynamic bind group for pass k
+            let compute_bind_group = render_context.render_device().create_bind_group(
+                None,
+                &compute_layout,
+                &BindGroupEntries::sequential((
+                    render_globals.0.binding().unwrap(),
+                    resources.vertex_buffer.as_entire_buffer_binding(),
+                    resources.indirect_buffer.as_entire_buffer_binding(),
+                    resources.pass_buffers[k].as_entire_buffer_binding(),
+                    resources.base_faces_buffer.as_entire_buffer_binding(),
+                    input_queue.as_entire_buffer_binding(),
+                    output_queue.as_entire_buffer_binding(),
+                    input_counter.as_entire_buffer_binding(),
+                    output_counter.as_entire_buffer_binding(),
+                )),
+            );
+
+            // Dispatch workgroups (max possible triangles for pass k is 20 * 4^k)
+            let max_triangles = 20 * 4u32.pow(k as u32);
+            let workgroup_count = max_triangles.div_ceil(64);
+
             let mut compute_pass = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor {
-                label: Some("Planet Compute Pass"),
+                label: Some(&format!("Planet Compute Pass Depth {}", k)),
                 timestamp_writes: None,
             });
             compute_pass.set_pipeline(compute_pipeline);
             compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-            compute_pass.dispatch_workgroups(1, 1, 1); // 20 threads (one per icosahedron face)
+            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
 
-        // 2. Run Render Pass using indirect drawing
+        // 2. Run Render Pass using indirect drawing (non-indexed)
         {
             let mut render_pass = render_context.command_encoder().begin_render_pass(&RenderPassDescriptor {
                 label: Some("Planet Render Pass"),
@@ -607,14 +776,9 @@ impl render_graph::Node for PlanetRenderNode {
             });
             render_pass.set_pipeline(render_pipeline);
             render_pass.set_bind_group(0, &render_bind_group, &[]);
-            render_pass.set_index_buffer((*resources.index_buffer).slice(..), IndexFormat::Uint32);
-            render_pass.draw_indexed_indirect(&resources.indirect_buffer, 0);
+            render_pass.draw_indirect(&resources.indirect_buffer, 0);
         }
-
-
-
 
         Ok(())
     }
 }
-
