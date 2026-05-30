@@ -20,6 +20,7 @@ const SHADER_RENDER_PATH: &str = "shaders/render_shaders.wgsl";
 // Shader configuration constants
 const NOISE_FREQUENCY: f32 = 1.5;
 const NOISE_AMPLITUDE: f32 = 0.10;
+const LOD_SPLIT_FACTOR: f32 = 45.0;
 
 // Maximum buffer capacities scaled up by 32x to support high LOD levels safely
 const MAX_VERTICES: usize = 65536 * 32; // 2,097,152 vertices
@@ -54,8 +55,8 @@ impl Plugin for PlanetRenderPlugin {
         app.insert_resource(PlanetCameraState {
             latitude: 0.1,
             longitude: 0.0,
-            distance: 12.0,
-            max_distance: 15.0,
+            distance: 10.0,
+            max_distance: 13.0,
         })
         .add_systems(Startup, setup_scene)
         .add_systems(Update, update_camera_and_state);
@@ -129,37 +130,20 @@ fn update_camera_and_state(
         return;
     }
 
-    // Determine current height and clamping threshold before applying new inputs
-    let y_u_prev = camera_state.latitude.sin();
-    let r_xz_u_prev = camera_state.latitude.cos();
-    let x_u_prev = r_xz_u_prev * camera_state.longitude.sin();
-    let z_u_prev = r_xz_u_prev * camera_state.longitude.cos();
-    let pos_unit_prev = Vec3::new(x_u_prev, y_u_prev, z_u_prev);
-
     let get_height_at = |dir: Vec3| -> f32 {
         let p = dir.normalize() * NOISE_FREQUENCY;
         let noise_val = planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z));
         2.0 + noise_val * NOISE_AMPLITUDE
     };
 
-    let height_prev = get_height_at(pos_unit_prev);
-    let min_allowed_prev = height_prev + 0.30; // Keep camera at least 0.30 units above surface
-    let was_at_min = camera_state.distance <= min_allowed_prev + 0.01;
-
     // Zoom with scroll wheel (proportional zoom speed for smooth descent)
     let mut scroll = 0.0;
     for event in mouse_wheel_events.read() {
         scroll += event.y;
     }
-    let zoom_speed = 0.08 * (camera_state.distance - 1.95).max(0.15);
+    let zoom_speed = 0.08 * camera_state.distance.max(0.15);
     camera_state.distance -= scroll * zoom_speed;
-
-    // Prevent desync: if the camera is already clamped to the minimum height,
-    // do not allow zoom-in scroll events to push the intended distance below min_allowed_prev.
-    if camera_state.distance < min_allowed_prev {
-        camera_state.distance = min_allowed_prev;
-    }
-    camera_state.distance = camera_state.distance.clamp(2.05, camera_state.max_distance);
+    camera_state.distance = camera_state.distance.clamp(0.0, camera_state.max_distance);
 
     // Orbit with left click drag
     if mouse_buttons.pressed(MouseButton::Left) {
@@ -176,42 +160,24 @@ fn update_camera_and_state(
         let _ = mouse_motion_events.read().count();
     }
 
-    // Dynamic heightmap collision clamping based on exact local displaced surface at the new position
+    // Position in spherical coordinates: calculate directional unit vector first
     let y_u = camera_state.latitude.sin();
     let r_xz_u = camera_state.latitude.cos();
     let x_u = r_xz_u * camera_state.longitude.sin();
     let z_u = r_xz_u * camera_state.longitude.cos();
     let pos_unit = Vec3::new(x_u, y_u, z_u);
 
+    // Calculate actual distance from center by adding local terrain height and the intended height above surface
     let height = get_height_at(pos_unit);
-    let min_allowed = height + 0.30;
-
-    // Snapping/Clamping logic:
-    // If we were previously at the minimum height and did not scroll out, follow the surface exactly.
-    // Otherwise, clamp intended distance normally.
-    if was_at_min && scroll >= 0.0 {
-        camera_state.distance = min_allowed;
-    } else {
-        camera_state.distance = camera_state.distance.clamp(min_allowed, camera_state.max_distance);
-    }
-    
-    // The actual distance is exactly camera_state.distance
-    let actual_distance = camera_state.distance;
-
-    println!("[Debug Clamping] intended: {:.4}, min_allowed: {:.4}, height: {:.4}", camera_state.distance, min_allowed, height);
+    let actual_distance = height + camera_state.distance;
 
     let Ok(mut transform) = camera_query.single_mut() else {
         return;
     };
 
-    // Position in spherical coordinates using actual distance
-    let y = actual_distance * camera_state.latitude.sin();
-    let r_xz = actual_distance * camera_state.latitude.cos();
-    let x = r_xz * camera_state.longitude.sin();
-    let z = r_xz * camera_state.longitude.cos();
-    let camera_pos = Vec3::new(x, y, z);
+    let camera_pos = pos_unit * actual_distance;
 
-    let local_up = camera_pos.normalize();
+    let local_up = pos_unit;
     // Robust local axes calculation to avoid NaNs near the poles
     let local_right = if local_up.y.abs() > 0.99 {
         Vec3::X.cross(local_up).normalize()
@@ -231,10 +197,8 @@ fn update_camera_and_state(
 
     // Target direction from planet center
     let target_dir = (local_up * target_angle.cos() + local_forward * target_angle.sin()).normalize();
-    // Evaluate actual displaced height at target direction and add safety elevation (+0.05) to prevent looking under the shell
-    let target_p = target_dir * NOISE_FREQUENCY;
-    let target_noise = planet_shader::snoise3(planet_shader::glam::Vec3::new(target_p.x, target_p.y, target_p.z));
-    let target_height = r + target_noise * NOISE_AMPLITUDE + 0.05;
+    // Evaluate actual displaced height at target direction and add safety elevation (+0.01) to prevent looking under the shell
+    let target_height = get_height_at(target_dir) + 0.01;
     let target_pos = target_dir * target_height;
 
     // Look direction is from the camera to the target point
@@ -254,7 +218,7 @@ struct GlobalsUniform {
     planet_center: Vec3,
     noise_frequency: f32,
     noise_amplitude: f32,
-    dummy: f32,
+    lod_split_factor: f32,
     frustum_planes: [Vec4; 6],
 }
 
@@ -680,7 +644,7 @@ fn prepare_uniforms(
         planet_center: Vec3::ZERO,
         noise_frequency: NOISE_FREQUENCY,
         noise_amplitude: NOISE_AMPLITUDE,
-        dummy: 0.0,
+        lod_split_factor: LOD_SPLIT_FACTOR,
         frustum_planes,
     };
     render_globals.0.set(globals);

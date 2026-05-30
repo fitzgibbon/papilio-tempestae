@@ -6,7 +6,7 @@ struct Globals {
     planet_center: vec3<f32>,
     noise_frequency: f32,
     noise_amplitude: f32,
-    dummy: f32,
+    lod_split_factor: f32,
     frustum_planes: array<vec4<f32>, 6>,
 }
 
@@ -107,13 +107,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // 2. Dynamic LOD based on distance to camera
     let dist_to_cam = distance(globals.camera_pos, world_center);
-    let h_above_surface = max(0.0, dist_to_cam - globals.planet_radius);
 
     // Split threshold halves at each depth level
-    let split_dist = 12.0 / pow(2.0, f32(pass_uniforms.depth));
+    let split_dist = globals.lod_split_factor / pow(2.0, f32(pass_uniforms.depth));
 
-    // Split if we are close enough and haven't hit maximum depth (7)
-    let should_split = h_above_surface < split_dist && pass_uniforms.depth < 7u;
+    // Split if we are close enough and haven't hit maximum depth (8)
+    let should_split = dist_to_cam < split_dist && pass_uniforms.depth < 8u;
 
     if (should_split) {
         // Compute edge midpoints projected onto the sphere
@@ -124,8 +123,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Allocate slots in the output queue
         let out_idx = atomicAdd(&output_counter, 4u);
 
-        // Prevent queue overflow (buffer capacity MAX_QUEUE_SIZE = 262144)
-        if (out_idx + 4u <= 262144u) {
+        // Prevent queue overflow (buffer capacity MAX_QUEUE_SIZE = 524288)
+        if (out_idx + 4u <= 524288u) {
             output_queue[out_idx] = Triangle(tri.v0, m0, m2);
             output_queue[out_idx + 1u] = Triangle(vec4<f32>(B, 0.0), m1, m0);
             output_queue[out_idx + 2u] = Triangle(vec4<f32>(C, 0.0), m2, m1);
