@@ -3909,6 +3909,7 @@ name = "papilio-tempestae"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bytemuck",
  "noiz",
  "wgpu 29.0.3",
 ]
