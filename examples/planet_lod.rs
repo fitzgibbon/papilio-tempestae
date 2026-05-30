@@ -139,7 +139,8 @@ fn update_camera_and_state(
     let z_u = r_xz_u * camera_state.longitude.cos();
     let pos_unit = Vec3::new(x_u, y_u, z_u);
 
-    let noise_val = planet_shader::snoise3(pos_unit * 1.5);
+    let p = pos_unit * 1.5;
+    let noise_val = planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z));
     let height = 2.0 + noise_val * 0.25;
     let min_allowed = height + 0.15; // Keep camera 0.15 units above displaced surface
     camera_state.distance = camera_state.distance.clamp(min_allowed, camera_state.max_distance);

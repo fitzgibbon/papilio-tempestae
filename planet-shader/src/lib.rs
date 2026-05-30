@@ -1,9 +1,13 @@
 #![cfg_attr(target_arch = "spirv", no_std)]
 
+pub use glam;
 use glam::{Vec2, Vec3, Vec4};
+
 
 #[cfg(target_arch = "spirv")]
 use spirv_std::num_traits::Float;
+
+
 
 fn mod289_vec3(x: Vec3) -> Vec3 {
     x - (x * (1.0 / 289.0)).floor() * 289.0
@@ -39,6 +43,7 @@ fn step_vec4(edge: Vec4, x: Vec4) -> Vec4 {
 }
 
 /// 3D Simplex Noise function, returning a value in [-1.0, 1.0].
+#[inline(never)]
 pub fn snoise3(v: Vec3) -> f32 {
     let c = Vec2::new(1.0 / 6.0, 1.0 / 3.0);
     let d = Vec4::new(0.0, 0.5, 1.0, 2.0);
@@ -107,8 +112,14 @@ pub fn snoise3(v: Vec3) -> f32 {
     105.0 * m4.dot(Vec4::new(p0.dot(x0), p1.dot(x1), p2.dot(x2), p3.dot(x3)))
 }
 
-#[cfg_attr(target_arch = "spirv", spirv_std::macros::spirv(compute(threads(1))))]
-pub fn dummy_main() {
-    let _val = snoise3(Vec3::ZERO);
+#[cfg(target_arch = "spirv")]
+#[spirv_std::macros::spirv(compute(threads(1)))]
+pub fn dummy_main(
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 0)] in_val: &Vec3,
+    #[spirv(storage_buffer, descriptor_set = 0, binding = 1)] out_val: &mut f32,
+) {
+    *out_val = snoise3(*in_val);
 }
+
+
 

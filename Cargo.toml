@@ -19,3 +19,7 @@ members = [
     ".",
     "planet-shader"
 ]
+
+[patch.crates-io]
+glam = { path = "patches/glam-0.24.2" }
+
