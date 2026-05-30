@@ -292,7 +292,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Calculate subdivision level (12 distinct levels of detail, max increased by 8x to 320)
     var LOD_SEGMENTS = array<u32, 12>(1u, 2u, 4u, 8u, 16u, 28u, 48u, 80u, 128u, 180u, 240u, 320u);
     let t_val = clamp(1.0 - h_above_surface / 12.0, 0.0, 1.0);
-    let index = u32(clamp(t_val * 11.0, 0.0, 11.0));
+    let index = u32(clamp(pow(t_val, 5.0) * 11.0, 0.0, 11.0));
     let S = LOD_SEGMENTS[index];
 
     // 3. Dynamic Tessellation
