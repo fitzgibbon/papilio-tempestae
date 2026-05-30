@@ -17,6 +17,14 @@ use bytemuck::{Pod, Zeroable};
 const SHADER_COMPUTE_PATH: &str = "shaders/terrain.wgsl";
 const SHADER_RENDER_PATH: &str = "shaders/render_shaders.wgsl";
 
+// Shader configuration constants
+const NOISE_FREQUENCY: f32 = 1.5;
+const NOISE_AMPLITUDE: f32 = 0.10;
+
+// Maximum buffer capacities scaled up by 32x to support 8x LOD segments safely
+const MAX_VERTICES: usize = 65536 * 32; // 2,097,152 vertices
+const MAX_INDICES: usize = 131072 * 32; // 4,194,304 indices
+
 fn main() {
     App::new()
         .add_plugins((
@@ -139,9 +147,9 @@ fn update_camera_and_state(
     let z_u = r_xz_u * camera_state.longitude.cos();
     let pos_unit = Vec3::new(x_u, y_u, z_u);
 
-    let p = pos_unit * 1.5;
+    let p = pos_unit * NOISE_FREQUENCY;
     let noise_val = planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z));
-    let height = 2.0 + noise_val * 0.25;
+    let height = 2.0 + noise_val * NOISE_AMPLITUDE;
     let min_allowed = height + 0.15; // Keep camera 0.15 units above displaced surface
     camera_state.distance = camera_state.distance.clamp(min_allowed, camera_state.max_distance);
 
@@ -238,18 +246,17 @@ fn init_gpu_resources(
     mut render_view: ResMut<RenderViewUniform>,
 ) {
     // Create base storage buffers
-    // Max 65,536 vertices. Each vertex holds position (16 bytes) and normal (16 bytes) = 32 bytes
+    // Each vertex holds position (16 bytes) and normal (16 bytes) = 32 bytes
     let vertex_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("Planet Vertex Buffer"),
-        size: 65536 * 32,
+        size: (MAX_VERTICES * 32) as u64,
         usage: BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
 
-    // Max 131,072 indices * 4 bytes per index = 524,288 bytes
     let index_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("Planet Index Buffer"),
-        size: 131072 * 4,
+        size: (MAX_INDICES * 4) as u64,
         usage: BufferUsages::STORAGE | BufferUsages::INDEX,
         mapped_at_creation: false,
     });
@@ -472,8 +479,8 @@ fn prepare_uniforms(
         camera_pos,
         planet_radius: 2.0,
         planet_center: Vec3::ZERO,
-        noise_frequency: 1.5,
-        noise_amplitude: 0.25,
+        noise_frequency: NOISE_FREQUENCY,
+        noise_amplitude: NOISE_AMPLITUDE,
         dummy: 0.0,
         frustum_planes,
     };
