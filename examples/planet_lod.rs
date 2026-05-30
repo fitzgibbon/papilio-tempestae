@@ -102,9 +102,13 @@ fn setup_scene(mut commands: Commands) {
         Transform::from_rotation(Quat::from_rotation_x(-0.5)),
     ));
 
-    // Spawn 3D camera
+    // Spawn 3D camera with near projection plane set to 0.01 to prevent near-plane clipping
     commands.spawn((
         Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            near: 0.01,
+            ..default()
+        }),
         Transform::from_xyz(0.0, 0.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
         Msaa::Off,
     ));
@@ -116,7 +120,15 @@ fn update_camera_and_state(
     mut mouse_wheel_events: MessageReader<MouseWheel>,
     mut mouse_motion_events: MessageReader<MouseMotion>,
     mut camera_query: Query<&mut Transform, With<Camera3d>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut app_exit_events: MessageWriter<AppExit>,
 ) {
+    // 1. Handle KeyQ to quit the application
+    if keyboard.just_pressed(KeyCode::KeyQ) {
+        app_exit_events.write(AppExit::Success);
+        return;
+    }
+
     // Determine if camera was clamped to the minimum height before processing inputs
     let y_u_prev = camera_state.latitude.sin();
     let r_xz_u_prev = camera_state.latitude.cos();
@@ -126,7 +138,7 @@ fn update_camera_and_state(
     let p_prev = pos_unit_prev * NOISE_FREQUENCY;
     let noise_val_prev = planet_shader::snoise3(planet_shader::glam::Vec3::new(p_prev.x, p_prev.y, p_prev.z));
     let height_prev = 2.0 + noise_val_prev * NOISE_AMPLITUDE;
-    let min_allowed_prev = height_prev + 0.15;
+    let min_allowed_prev = height_prev + 0.25;
     let was_at_min = camera_state.distance <= min_allowed_prev + 0.01;
 
     // Zoom with scroll wheel (proportional zoom speed for smooth descent)
@@ -162,7 +174,7 @@ fn update_camera_and_state(
     let p = pos_unit * NOISE_FREQUENCY;
     let noise_val = planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z));
     let height = 2.0 + noise_val * NOISE_AMPLITUDE;
-    let min_allowed = height + 0.15; // Keep camera 0.15 units above displaced surface
+    let min_allowed = height + 0.25; // Keep camera 0.25 units above displaced surface
 
     // Snapping/Clamping logic
     if was_at_min && scroll >= 0.0 {
