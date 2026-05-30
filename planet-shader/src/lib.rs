@@ -122,5 +122,28 @@ pub fn dummy_main(
     *out_val = snoise3(*in_val);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_noise_values() {
+        for &(x, y, z) in &[
+            (0.1, 0.2, 0.3),
+            (0.5, -0.2, 0.8),
+            (-0.7, 0.1, -0.4),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+        ] {
+            let v = Vec3::new(x, y, z);
+            let n = snoise3(v);
+            println!("Noise value at ({}, {}, {}): {}", x, y, z, n);
+        }
+    }
+}
+
+
+
 
 
