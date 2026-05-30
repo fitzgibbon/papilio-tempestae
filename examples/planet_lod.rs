@@ -79,7 +79,10 @@ impl Plugin for PlanetRenderPlugin {
         // Register the render node inside the Core3d sub-graph
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
         if let Some(core_3d_graph) = render_graph.get_sub_graph_mut(bevy::core_pipeline::core_3d::graph::Core3d) {
-            core_3d_graph.add_node(PlanetRenderLabel, PlanetRenderNode);
+            core_3d_graph.add_node(PlanetRenderLabel, PlanetRenderNode {
+                readback_state: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                last_log_time: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            });
             core_3d_graph.add_node_edge(
                 Node3d::EndMainPass,
                 PlanetRenderLabel,
@@ -228,6 +231,7 @@ struct PlanetGpuResources {
     index_buffer: Buffer,
     indirect_buffer: Buffer,
     vertex_counter_buffer: Buffer,
+    readback_buffer: Buffer,
 }
 
 #[derive(Resource, Default)]
@@ -273,7 +277,15 @@ fn init_gpu_resources(
     let vertex_counter_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("Planet Vertex Counter Buffer"),
         size: 4,
-        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
+    // Readback Buffer (4 bytes)
+    let readback_buffer = render_device.create_buffer(&BufferDescriptor {
+        label: Some("Planet Readback Buffer"),
+        size: 4,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
 
@@ -424,6 +436,7 @@ fn init_gpu_resources(
         index_buffer,
         indirect_buffer,
         vertex_counter_buffer,
+        readback_buffer,
     });
 }
 
@@ -516,7 +529,14 @@ fn prepare_uniforms(
 struct PlanetRenderLabel;
 
 
-struct PlanetRenderNode;
+const READBACK_STATE_IDLE: u32 = 0;
+const READBACK_STATE_COPY_SUBMITTED: u32 = 1;
+const READBACK_STATE_MAPPING: u32 = 2;
+
+struct PlanetRenderNode {
+    readback_state: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    last_log_time: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+}
 
 impl render_graph::Node for PlanetRenderNode {
     fn run<'w>(
@@ -609,6 +629,50 @@ impl render_graph::Node for PlanetRenderNode {
             render_pass.set_bind_group(0, &render_bind_group, &[]);
             render_pass.set_index_buffer((*resources.index_buffer).slice(..), IndexFormat::Uint32);
             render_pass.draw_indexed_indirect(&resources.indirect_buffer, 0);
+        }
+
+        // 3. Asynchronously copy and read back vertex counter for debugging (throttled to once per second)
+        let state = self.readback_state.load(std::sync::atomic::Ordering::Relaxed);
+        if state == READBACK_STATE_COPY_SUBMITTED {
+            if self.readback_state.compare_exchange(
+                READBACK_STATE_COPY_SUBMITTED,
+                READBACK_STATE_MAPPING,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            ).is_ok() {
+                let readback_buffer = resources.readback_buffer.clone();
+                let state_clone = self.readback_state.clone();
+                readback_buffer.clone().slice(..).map_async(MapMode::Read, move |result| {
+                    if result.is_ok() {
+                        let slice = readback_buffer.slice(..);
+                        let data = slice.get_mapped_range();
+                        let count = u32::from_le_bytes(data[..4].try_into().unwrap());
+                        println!("[Planet Debug] Vertices generated/rendered: {}", count);
+                        drop(data);
+                        readback_buffer.unmap();
+                    }
+                    state_clone.store(READBACK_STATE_IDLE, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+        } else if state == READBACK_STATE_IDLE {
+            let mut last_log = self.last_log_time.lock().unwrap();
+            let should_log = match *last_log {
+                None => true,
+                Some(last) => last.elapsed() >= std::time::Duration::from_secs(1),
+            };
+            if should_log {
+                *last_log = Some(std::time::Instant::now());
+                
+                render_context.command_encoder().copy_buffer_to_buffer(
+                    &resources.vertex_counter_buffer,
+                    0,
+                    &resources.readback_buffer,
+                    0,
+                    4,
+                );
+                
+                self.readback_state.store(READBACK_STATE_COPY_SUBMITTED, std::sync::atomic::Ordering::Relaxed);
+            }
         }
 
         Ok(())

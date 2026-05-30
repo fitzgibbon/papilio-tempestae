@@ -1,4 +1,5 @@
 #![cfg_attr(target_arch = "spirv", no_std)]
+#![allow(clippy::excessive_precision)]
 
 pub use glam;
 use glam::{Vec2, Vec3, Vec4};
