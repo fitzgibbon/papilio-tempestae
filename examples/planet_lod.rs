@@ -117,6 +117,18 @@ fn update_camera_and_state(
     mut mouse_motion_events: MessageReader<MouseMotion>,
     mut camera_query: Query<&mut Transform, With<Camera3d>>,
 ) {
+    // Determine if camera was clamped to the minimum height before processing inputs
+    let y_u_prev = camera_state.latitude.sin();
+    let r_xz_u_prev = camera_state.latitude.cos();
+    let x_u_prev = r_xz_u_prev * camera_state.longitude.sin();
+    let z_u_prev = r_xz_u_prev * camera_state.longitude.cos();
+    let pos_unit_prev = Vec3::new(x_u_prev, y_u_prev, z_u_prev);
+    let p_prev = pos_unit_prev * NOISE_FREQUENCY;
+    let noise_val_prev = planet_shader::snoise3(planet_shader::glam::Vec3::new(p_prev.x, p_prev.y, p_prev.z));
+    let height_prev = 2.0 + noise_val_prev * NOISE_AMPLITUDE;
+    let min_allowed_prev = height_prev + 0.15;
+    let was_at_min = camera_state.distance <= min_allowed_prev + 0.01;
+
     // Zoom with scroll wheel (proportional zoom speed for smooth descent)
     let mut scroll = 0.0;
     for event in mouse_wheel_events.read() {
@@ -151,7 +163,15 @@ fn update_camera_and_state(
     let noise_val = planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z));
     let height = 2.0 + noise_val * NOISE_AMPLITUDE;
     let min_allowed = height + 0.15; // Keep camera 0.15 units above displaced surface
-    camera_state.distance = camera_state.distance.clamp(min_allowed, camera_state.max_distance);
+
+    // Snapping/Clamping logic
+    if was_at_min && scroll >= 0.0 {
+        // If we were previously at the minimum, and did not zoom out, follow the surface exactly
+        camera_state.distance = min_allowed;
+    } else {
+        // Otherwise, clamp normally
+        camera_state.distance = camera_state.distance.clamp(min_allowed, camera_state.max_distance);
+    }
 
     let Ok(mut transform) = camera_query.single_mut() else {
         return;
