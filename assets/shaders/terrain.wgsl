@@ -180,23 +180,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let dist_to_cam = distance(globals.camera_pos, world_center);
     let h_above_surface = max(0.0, dist_to_cam - globals.planet_radius);
 
-    // Calculate subdivision level (k = 0 to 5)
-    var k = 0u;
-    if (h_above_surface < 0.8) {
-        k = 5u; // Dense subdivision close to the surface
-    } else if (h_above_surface < 1.8) {
-        k = 4u;
-    } else if (h_above_surface < 3.2) {
-        k = 3u;
-    } else if (h_above_surface < 5.5) {
-        k = 2u;
-    } else if (h_above_surface < 9.0) {
-        k = 1u;
-    } else {
-        k = 0u; // Single low-poly triangle at a distance
-    }
-
-    let S = 1u << k; // Segments per edge: 1, 2, 4, 8, 16, 32
+    // Calculate subdivision level (12 distinct levels of detail)
+    var LOD_SEGMENTS = array<u32, 12>(1u, 2u, 3u, 4u, 6u, 8u, 11u, 15u, 20u, 26u, 32u, 40u);
+    let t_val = clamp(1.0 - h_above_surface / 12.0, 0.0, 1.0);
+    let index = u32(clamp(t_val * 11.0, 0.0, 11.0));
+    let S = LOD_SEGMENTS[index];
 
     // 3. Dynamic Tessellation
     // Loop over the subdivision grid and output triangles

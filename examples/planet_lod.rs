@@ -36,7 +36,6 @@ struct PlanetCameraState {
     latitude: f32,
     longitude: f32,
     distance: f32,
-    min_distance: f32,
     max_distance: f32,
 }
 
@@ -48,7 +47,6 @@ impl Plugin for PlanetRenderPlugin {
             latitude: 0.1,
             longitude: 0.0,
             distance: 12.0,
-            min_distance: 2.1, // Planet radius is 2.0
             max_distance: 15.0,
         })
         .add_systems(Startup, setup_scene)
@@ -118,7 +116,6 @@ fn update_camera_and_state(
     }
     let zoom_speed = 0.08 * (camera_state.distance - 1.95).max(0.15);
     camera_state.distance -= scroll * zoom_speed;
-    camera_state.distance = camera_state.distance.clamp(camera_state.min_distance, camera_state.max_distance);
 
     // Orbit with left click drag
     if mouse_buttons.pressed(MouseButton::Left) {
@@ -134,6 +131,18 @@ fn update_camera_and_state(
         // Drain events anyway
         let _ = mouse_motion_events.read().count();
     }
+
+    // Dynamic heightmap collision clamping based on 3D Perlin noise
+    let y_u = camera_state.latitude.sin();
+    let r_xz_u = camera_state.latitude.cos();
+    let x_u = r_xz_u * camera_state.longitude.sin();
+    let z_u = r_xz_u * camera_state.longitude.cos();
+    let pos_unit = Vec3::new(x_u, y_u, z_u);
+
+    let noise_val = perlin_noise3(pos_unit * 1.5);
+    let height = 2.0 + noise_val * 0.25;
+    let min_allowed = height + 0.15; // Keep camera 0.15 units above displaced surface
+    camera_state.distance = camera_state.distance.clamp(min_allowed, camera_state.max_distance);
 
     let Ok(mut transform) = camera_query.single_mut() else {
         return;
@@ -425,10 +434,10 @@ fn extract_frustum_planes(m: Mat4) -> [Vec4; 6] {
         row3 - row2, // Far
     ];
 
-    for i in 0..6 {
-        let normal = Vec3::new(planes[i].x, planes[i].y, planes[i].z);
+    for plane in &mut planes {
+        let normal = Vec3::new(plane.x, plane.y, plane.z);
         let len = normal.length();
-        planes[i] /= len;
+        *plane /= len;
     }
 
     planes
@@ -569,7 +578,7 @@ impl render_graph::Node for PlanetRenderNode {
             let mut render_pass = render_context.command_encoder().begin_render_pass(&RenderPassDescriptor {
                 label: Some("Planet Render Pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view_target.main_texture_view(),
+                    view: view_target.main_texture_view(),
                     resolve_target: None,
                     ops: Operations {
                         load: LoadOp::Load, // Preserve background/cleared pixels
@@ -591,9 +600,180 @@ impl render_graph::Node for PlanetRenderNode {
             render_pass.set_pipeline(render_pipeline);
             render_pass.set_bind_group(0, &render_bind_group, &[]);
             render_pass.set_index_buffer((*resources.index_buffer).slice(..), IndexFormat::Uint32);
-            render_pass.draw_indexed_indirect(&*resources.indirect_buffer, 0);
+            render_pass.draw_indexed_indirect(&resources.indirect_buffer, 0);
         }
 
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// 4. CPU Noise and Height Calculation for Camera Clamping
+// ---------------------------------------------------------------------------
+
+fn permute4(x: Vec4) -> Vec4 {
+    let temp = (x * 34.0 + 1.0) * x;
+    Vec4::new(
+        temp.x % 289.0,
+        temp.y % 289.0,
+        temp.z % 289.0,
+        temp.w % 289.0,
+    )
+}
+
+fn taylor_inv_sqrt4(r: Vec4) -> Vec4 {
+    Vec4::splat(1.79284291400159) - 0.85373472095314 * r
+}
+
+fn fade3(t: Vec3) -> Vec3 {
+    t * t * t * (t * (t * 6.0 - Vec3::splat(15.0)) + Vec3::splat(10.0))
+}
+
+fn wgsl_fract(x: f32) -> f32 {
+    x - x.floor()
+}
+
+fn wgsl_fract_vec3(v: Vec3) -> Vec3 {
+    v - v.floor()
+}
+
+fn perlin_noise3(p: Vec3) -> f32 {
+    let mut pi0 = p.floor();
+    let mut pi1 = pi0 + Vec3::ONE;
+
+    pi0 = Vec3::new(pi0.x % 289.0, pi0.y % 289.0, pi0.z % 289.0);
+    pi1 = Vec3::new(pi1.x % 289.0, pi1.y % 289.0, pi1.z % 289.0);
+
+    let pf0 = wgsl_fract_vec3(p);
+    let pf1 = pf0 - Vec3::ONE;
+
+    let ix = Vec4::new(pi0.x, pi1.x, pi0.x, pi1.x);
+    let iy = Vec4::new(pi0.y, pi0.y, pi1.y, pi1.y);
+    let iz0 = Vec4::splat(pi0.z);
+    let iz1 = Vec4::splat(pi1.z);
+
+    let ixy = permute4(permute4(ix) + iy);
+    let ixy0 = permute4(ixy + iz0);
+    let ixy1 = permute4(ixy + iz1);
+
+    let mut gx0 = ixy0 / 7.0;
+    let mut gy0 = Vec4::new(
+        wgsl_fract(gx0.x.floor() / 7.0) - 0.5,
+        wgsl_fract(gx0.y.floor() / 7.0) - 0.5,
+        wgsl_fract(gx0.z.floor() / 7.0) - 0.5,
+        wgsl_fract(gx0.w.floor() / 7.0) - 0.5,
+    );
+    gx0 = Vec4::new(wgsl_fract(gx0.x), wgsl_fract(gx0.y), wgsl_fract(gx0.z), wgsl_fract(gx0.w));
+    let gz0 = Vec4::splat(0.5) - gx0.abs() - gy0.abs();
+
+    let sz0 = Vec4::new(
+        if gz0.x < 0.0 { 1.0 } else { 0.0 },
+        if gz0.y < 0.0 { 1.0 } else { 0.0 },
+        if gz0.z < 0.0 { 1.0 } else { 0.0 },
+        if gz0.w < 0.0 { 1.0 } else { 0.0 },
+    );
+
+    let step_gx0 = Vec4::new(
+        if gx0.x >= 0.0 { 1.0 } else { 0.0 },
+        if gx0.y >= 0.0 { 1.0 } else { 0.0 },
+        if gx0.z >= 0.0 { 1.0 } else { 0.0 },
+        if gx0.w >= 0.0 { 1.0 } else { 0.0 },
+    );
+    let step_gy0 = Vec4::new(
+        if gy0.x >= 0.0 { 1.0 } else { 0.0 },
+        if gy0.y >= 0.0 { 1.0 } else { 0.0 },
+        if gy0.z >= 0.0 { 1.0 } else { 0.0 },
+        if gy0.w >= 0.0 { 1.0 } else { 0.0 },
+    );
+    gx0 = gx0 + sz0 * (step_gx0 - 0.5);
+    gy0 = gy0 + sz0 * (step_gy0 - 0.5);
+
+    let mut gx1 = ixy1 / 7.0;
+    let mut gy1 = Vec4::new(
+        wgsl_fract(gx1.x.floor() / 7.0) - 0.5,
+        wgsl_fract(gx1.y.floor() / 7.0) - 0.5,
+        wgsl_fract(gx1.z.floor() / 7.0) - 0.5,
+        wgsl_fract(gx1.w.floor() / 7.0) - 0.5,
+    );
+    gx1 = Vec4::new(wgsl_fract(gx1.x), wgsl_fract(gx1.y), wgsl_fract(gx1.z), wgsl_fract(gx1.w));
+    let gz1 = Vec4::splat(0.5) - gx1.abs() - gy1.abs();
+
+    let sz1 = Vec4::new(
+        if gz1.x < 0.0 { 1.0 } else { 0.0 },
+        if gz1.y < 0.0 { 1.0 } else { 0.0 },
+        if gz1.z < 0.0 { 1.0 } else { 0.0 },
+        if gz1.w < 0.0 { 1.0 } else { 0.0 },
+    );
+
+    let step_gx1 = Vec4::new(
+        if gx1.x >= 0.0 { 1.0 } else { 0.0 },
+        if gx1.y >= 0.0 { 1.0 } else { 0.0 },
+        if gx1.z >= 0.0 { 1.0 } else { 0.0 },
+        if gx1.w >= 0.0 { 1.0 } else { 0.0 },
+    );
+    let step_gy1 = Vec4::new(
+        if gy1.x >= 0.0 { 1.0 } else { 0.0 },
+        if gy1.y >= 0.0 { 1.0 } else { 0.0 },
+        if gy1.z >= 0.0 { 1.0 } else { 0.0 },
+        if gy1.w >= 0.0 { 1.0 } else { 0.0 },
+    );
+    gx1 = gx1 - sz1 * (step_gx1 - 0.5);
+    gy1 = gy1 - sz1 * (step_gy1 - 0.5);
+
+    let mut g000 = Vec3::new(gx0.x, gy0.x, gz0.x);
+    let mut g100 = Vec3::new(gx0.y, gy0.y, gz0.y);
+    let mut g010 = Vec3::new(gx0.z, gy0.z, gz0.z);
+    let mut g110 = Vec3::new(gx0.w, gy0.w, gz0.w);
+    let mut g001 = Vec3::new(gx1.x, gy1.x, gz1.x);
+    let mut g101 = Vec3::new(gx1.y, gy1.y, gz1.y);
+    let mut g011 = Vec3::new(gx1.z, gy1.z, gz1.z);
+    let mut g111 = Vec3::new(gx1.w, gy1.w, gz1.w);
+
+    let norm0 = taylor_inv_sqrt4(Vec4::new(
+        g000.dot(g000),
+        g010.dot(g010),
+        g100.dot(g100),
+        g110.dot(g110),
+    ));
+    g000 *= norm0.x;
+    g010 *= norm0.y;
+    g100 *= norm0.z;
+    g110 *= norm0.w;
+
+    let norm1 = taylor_inv_sqrt4(Vec4::new(
+        g001.dot(g001),
+        g011.dot(g011),
+        g101.dot(g101),
+        g111.dot(g111),
+    ));
+    g001 *= norm1.x;
+    g011 *= norm1.y;
+    g101 *= norm1.z;
+    g111 *= norm1.w;
+
+    let n000 = g000.dot(pf0);
+    let n100 = g100.dot(Vec3::new(pf1.x, pf0.y, pf0.z));
+    let n010 = g010.dot(Vec3::new(pf0.x, pf1.y, pf0.z));
+    let n110 = g110.dot(Vec3::new(pf1.x, pf1.y, pf0.z));
+    let n001 = g001.dot(Vec3::new(pf0.x, pf0.y, pf1.z));
+    let n101 = g101.dot(Vec3::new(pf1.x, pf0.y, pf1.z));
+    let n011 = g011.dot(Vec3::new(pf0.x, pf1.y, pf1.z));
+    let n111 = g111.dot(pf1);
+
+    let fade_xyz = fade3(pf0);
+
+    let n_z = Vec4::new(
+        n000 + fade_xyz.z * (n001 - n000),
+        n100 + fade_xyz.z * (n101 - n100),
+        n010 + fade_xyz.z * (n011 - n010),
+        n110 + fade_xyz.z * (n111 - n110),
+    );
+
+    let n_yz = Vec2::new(
+        n_z.x + fade_xyz.y * (n_z.z - n_z.x),
+        n_z.y + fade_xyz.y * (n_z.w - n_z.y),
+    );
+
+    let n_xyz = n_yz.x + fade_xyz.x * (n_yz.y - n_yz.x);
+    2.2 * n_xyz
 }
