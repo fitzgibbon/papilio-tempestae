@@ -8,3 +8,14 @@ bevy = "*"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 noiz = "*"
 wgpu = "*"
+planet-shader = { path = "planet-shader" }
+
+[build-dependencies]
+spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", branch = "main" }
+naga = { version = "*", features = ["spv-in", "wgsl-out"] }
+
+[workspace]
+members = [
+    ".",
+    "planet-shader"
+]
