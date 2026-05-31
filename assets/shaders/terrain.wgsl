@@ -387,7 +387,7 @@ fn sample_blended_octave0(pos: vec3<f32>) -> f32 {
     let mask = clamp(sample_noise(pos * f_mask) * 1.8 + 0.3, 0.0, 1.0);
     let plains = sample_noise(pos * f0) * 0.25;
     let mount = 1.0 - abs(sample_noise(pos * (f0 * 0.8)));
-    return mix(plains, mount * 1.1 - 0.3, mask);
+    return mix(plains, mount * 1.1 - 0.3, mask * mask);
 }
 
 // Displace a normalized sphere coordinate using 4 octaves of 3D Simplex noise with gradient modulation
@@ -399,6 +399,7 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
     let f_mask = globals.noise_frequency * 0.4;
     let n_mask = sample_noise(pos_unit * f_mask);
     let mountain_density = clamp(n_mask * 1.8 + 0.3, 0.0, 1.0);
+    let mountain_factor = mountain_density * mountain_density;
 
     // Octave 0
     let f0 = globals.noise_frequency;
@@ -410,7 +411,7 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
     let p0_mount = pos_unit * (f0 * 0.8);
     let n0_mount = 1.0 - abs(sample_noise(p0_mount));
 
-    let n0 = mix(n0_plains, n0_mount * 1.1 - 0.3, mountain_density);
+    let n0 = mix(n0_plains, n0_mount * 1.1 - 0.3, mountain_factor);
 
     let dx0 = sample_blended_octave0(pos_unit + vec3<f32>(eps, 0.0, 0.0)) - n0;
     let dy0 = sample_blended_octave0(pos_unit + vec3<f32>(0.0, eps, 0.0)) - n0;
@@ -456,9 +457,13 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
 
     // Add Sedimentary Terracing Effect on slopes
     let slope = clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
-    let terrace_pattern = sin(total_disp * 1.5);
+    let terrace_noise = sample_noise(pos_unit * (f0 * 4.0));
+    let terrace_pattern = sin(total_disp * 1.5 + terrace_noise * 0.4);
     let terrace_amp = 0.8 * slope * mountain_density;
     total_disp += terrace_pattern * terrace_amp;
+
+    // Clamp displacement to flat ocean floor
+    total_disp = max(total_disp, -2.5);
 
     let height = globals.planet_radius + total_disp;
     return globals.planet_center + pos_unit * height;
@@ -528,8 +533,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Allocate slots in the output queue
         let out_idx = atomicAdd(&output_counter, 4u);
 
-        // Prevent queue overflow (buffer capacity MAX_QUEUE_SIZE = 524288)
-        if (out_idx + 4u <= 524288u) {
+        // Prevent queue overflow (buffer capacity MAX_QUEUE_SIZE = 2097152)
+        if (out_idx + 4u <= 2097152u) {
             output_queue[out_idx] = Triangle(tri.v0, m0, m2);
             output_queue[out_idx + 1u] = Triangle(vec4<f32>(B, 0.0), m1, m0);
             output_queue[out_idx + 2u] = Triangle(vec4<f32>(C, 0.0), m2, m1);
@@ -547,8 +552,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Allocate slots in the vertex buffer
         let v_start = atomicAdd(&indirect_args.vertex_count, 3u);
 
-        // Prevent vertex buffer overflow (MAX_VERTICES = 2097152)
-        if (v_start + 3u <= 2097152u) {
+        // Prevent vertex buffer overflow (MAX_VERTICES = 8388608)
+        if (v_start + 3u <= 8388608u) {
             out_vertices[v_start] = VertexOutput(vec4<f32>(p1, 1.0), vec4<f32>(flat_normal, 0.0));
             out_vertices[v_start + 1u] = VertexOutput(vec4<f32>(p2, 1.0), vec4<f32>(flat_normal, 0.0));
             out_vertices[v_start + 2u] = VertexOutput(vec4<f32>(p3, 1.0), vec4<f32>(flat_normal, 0.0));

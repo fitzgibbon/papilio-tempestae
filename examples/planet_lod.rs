@@ -8,7 +8,7 @@ use bevy::{
         render_graph::{self, RenderGraph, RenderLabel},
         render_resource::*,
         renderer::{RenderContext, RenderDevice, RenderQueue},
-        Render, RenderApp, RenderStartup,
+        Render, RenderApp, RenderStartup, Extract, ExtractSchedule,
     },
     core_pipeline::core_3d::graph::Node3d,
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
@@ -23,11 +23,11 @@ const PLANET_RADIUS: f32 = 100.0;
 const EYE_HEIGHT: f32 = 1.0;
 const NOISE_FREQUENCY: f32 = 1.5;
 const NOISE_AMPLITUDE: f32 = 40.0;
-const LOD_SPLIT_FACTOR: f32 = 2250.0; // scaled 50x (45.0 * 50.0)
+const LOD_SPLIT_FACTOR: f32 = 4500.0; // scaled 100x (45.0 * 100.0)
 
-// Maximum buffer capacities scaled up by 32x to support high LOD levels safely
-const MAX_VERTICES: usize = 65536 * 32; // 2,097,152 vertices
-const MAX_QUEUE_SIZE: usize = 524288; // 524,288 triangles max queue size
+// Maximum buffer capacities scaled up by 128x to support high LOD levels safely
+const MAX_VERTICES: usize = 65536 * 128; // 8,388,608 vertices
+const MAX_QUEUE_SIZE: usize = 2097152; // 2,097,152 triangles max queue size
 
 fn main() {
     App::new()
@@ -51,6 +51,7 @@ struct PlanetCameraState {
     look_pitch: f32,
     elevation: f32,
     max_distance: f32,
+    show_wireframe: bool,
 }
 
 impl Default for PlanetCameraState {
@@ -77,8 +78,16 @@ impl Default for PlanetCameraState {
             look_pitch: -std::f32::consts::FRAC_PI_2,
             elevation: 500.0,
             max_distance: 650.0,
+            show_wireframe: true,
         }
     }
+}
+
+fn extract_camera_state(
+    mut commands: Commands,
+    camera_state: Extract<Res<PlanetCameraState>>,
+) {
+    commands.insert_resource(camera_state.clone());
 }
 
 struct PlanetRenderPlugin;
@@ -94,6 +103,8 @@ impl Plugin for PlanetRenderPlugin {
         };
 
         render_app
+            .insert_resource(PlanetCameraState::default())
+            .add_systems(ExtractSchedule, extract_camera_state)
             .init_resource::<RenderGlobalsUniform>()
             .init_resource::<RenderViewUniform>()
             .add_systems(RenderStartup, init_gpu_resources)
@@ -185,10 +196,12 @@ fn update_ui(
         .and_then(|fps| fps.smoothed())
         .unwrap_or(0.0);
 
+    let wireframe_status = if camera_state.show_wireframe { "ON" } else { "OFF" };
+
     for mut text in text_query.iter_mut() {
         text.0 = format!(
-            "Intended Altitude: {:.4}\nActual Altitude: {:.4}\nFPS: {:.1}",
-            intended_alt, actual_alt, fps
+            "Intended Altitude: {:.4}\nActual Altitude: {:.4}\nFPS: {:.1}\nWireframe (Press V to toggle): {}",
+            intended_alt, actual_alt, fps, wireframe_status
         );
     }
 }
@@ -223,6 +236,7 @@ fn update_camera_and_state(
         let f_mask = NOISE_FREQUENCY * 0.4;
         let n_mask = sample_noise_rust(pos_unit * f_mask);
         let mountain_density = ((n_mask * 1.8) + 0.3).clamp(0.0, 1.0);
+        let mountain_factor = mountain_density * mountain_density;
 
         // Octave 0
         let f0 = NOISE_FREQUENCY;
@@ -234,13 +248,14 @@ fn update_camera_and_state(
         let p0_mount = pos_unit * (f0 * 0.8);
         let n0_mount = 1.0 - sample_noise_rust(p0_mount).abs();
 
-        let n0 = n0_plains * (1.0 - mountain_density) + (n0_mount * 1.1 - 0.3) * mountain_density;
+        let n0 = n0_plains * (1.0 - mountain_factor) + (n0_mount * 1.1 - 0.3) * mountain_factor;
 
         let sample_blended_octave0 = |pos: Vec3| -> f32 {
             let mask = ((sample_noise_rust(pos * f_mask) * 1.8) + 0.3).clamp(0.0, 1.0);
+            let m_factor = mask * mask;
             let plains = sample_noise_rust(pos * f0) * 0.25;
             let mount = 1.0 - sample_noise_rust(pos * (f0 * 0.8)).abs();
-            plains * (1.0 - mask) + (mount * 1.1 - 0.3) * mask
+            plains * (1.0 - m_factor) + (mount * 1.1 - 0.3) * m_factor
         };
 
         let dx0 = sample_blended_octave0(pos_unit + Vec3::new(eps, 0.0, 0.0)) - n0;
@@ -287,9 +302,13 @@ fn update_camera_and_state(
 
         // Add Sedimentary Terracing Effect on slopes
         let slope = (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
-        let terrace_pattern = (total_disp * 1.5).sin();
+        let terrace_noise = sample_noise_rust(pos_unit * (f0 * 4.0));
+        let terrace_pattern = (total_disp * 1.5 + terrace_noise * 0.4).sin();
         let terrace_amp = 0.8 * slope * mountain_density;
         total_disp += terrace_pattern * terrace_amp;
+
+        // Clamp displacement to flat ocean floor
+        total_disp = total_disp.max(-2.5);
 
         PLANET_RADIUS + total_disp
     };
@@ -306,6 +325,10 @@ fn update_camera_and_state(
             cursor.visible = true;
             cursor.grab_mode = bevy::window::CursorGrabMode::None;
         }
+    }
+    // Toggle wireframe view
+    if keyboard.just_pressed(KeyCode::KeyV) {
+        camera_state.show_wireframe = !camera_state.show_wireframe;
     }
 
     // Accumulate mouse movement for mouselook if cursor is locked
@@ -433,6 +456,8 @@ struct ViewUniform {
     view_proj: Mat4,
     light_dir: Vec3,
     ambient: f32,
+    camera_pos: Vec3,
+    show_wireframe: f32,
 }
 
 #[repr(C)]
@@ -827,6 +852,7 @@ fn prepare_uniforms(
     mut render_view: ResMut<RenderViewUniform>,
     resources: Option<Res<PlanetGpuResources>>,
     view_query: Query<&ExtractedView>,
+    camera_state: Option<Res<PlanetCameraState>>,
 ) {
     let Some(gpu_resources) = resources else {
         return;
@@ -856,11 +882,19 @@ fn prepare_uniforms(
     render_globals.0.set(globals);
     render_globals.0.write_buffer(&render_device, &render_queue);
 
+    let show_wireframe = if let Some(state) = camera_state {
+        if state.show_wireframe { 1.0f32 } else { 0.0f32 }
+    } else {
+        1.0f32
+    };
+
     // Update view matrix for render pass
     let view = ViewUniform {
         view_proj,
         light_dir: Vec3::new(1.0, 1.0, 1.0).normalize(),
         ambient: 0.15,
+        camera_pos,
+        show_wireframe,
     };
     render_view.0.set(view);
     render_view.0.write_buffer(&render_device, &render_queue);

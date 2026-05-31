@@ -75,6 +75,7 @@ fn get_noise_height(pos_unit: Vec3) -> f32 {
     let f_mask = noise_frequency * 0.4;
     let n_mask = sample_noise_rust(pos_unit * f_mask);
     let mountain_density = ((n_mask * 1.8) + 0.3).clamp(0.0, 1.0);
+    let mountain_factor = mountain_density * mountain_density;
 
     // Octave 0
     let f0 = noise_frequency;
@@ -86,13 +87,14 @@ fn get_noise_height(pos_unit: Vec3) -> f32 {
     let p0_mount = pos_unit * (f0 * 0.8);
     let n0_mount = 1.0 - sample_noise_rust(p0_mount).abs();
 
-    let n0 = n0_plains * (1.0 - mountain_density) + (n0_mount * 1.1 - 0.3) * mountain_density;
+    let n0 = n0_plains * (1.0 - mountain_factor) + (n0_mount * 1.1 - 0.3) * mountain_factor;
 
     let sample_blended_octave0 = |pos: Vec3| -> f32 {
         let mask = ((sample_noise_rust(pos * f_mask) * 1.8) + 0.3).clamp(0.0, 1.0);
+        let m_factor = mask * mask;
         let plains = sample_noise_rust(pos * f0) * 0.25;
         let mount = 1.0 - sample_noise_rust(pos * (f0 * 0.8)).abs();
-        plains * (1.0 - mask) + (mount * 1.1 - 0.3) * mask
+        plains * (1.0 - m_factor) + (mount * 1.1 - 0.3) * m_factor
     };
 
     let dx0 = sample_blended_octave0(pos_unit + Vec3::new(eps, 0.0, 0.0)) - n0;
@@ -139,9 +141,13 @@ fn get_noise_height(pos_unit: Vec3) -> f32 {
 
     // Add Sedimentary Terracing Effect on slopes
     let slope = (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
-    let terrace_pattern = (total_disp * 1.5).sin();
+    let terrace_noise = sample_noise_rust(pos_unit * (f0 * 4.0));
+    let terrace_pattern = (total_disp * 1.5 + terrace_noise * 0.4).sin();
     let terrace_amp = 0.8 * slope * mountain_density;
     total_disp += terrace_pattern * terrace_amp;
+
+    // Clamp displacement to flat ocean floor
+    total_disp = total_disp.max(-2.5);
 
     planet_radius + total_disp
 }
