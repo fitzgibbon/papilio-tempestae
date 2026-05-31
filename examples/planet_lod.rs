@@ -19,9 +19,11 @@ const SHADER_COMPUTE_PATH: &str = "shaders/terrain.wgsl";
 const SHADER_RENDER_PATH: &str = "shaders/render_shaders.wgsl";
 
 // Shader configuration constants
+const PLANET_RADIUS: f32 = 100.0;
+const EYE_HEIGHT: f32 = 1.0;
 const NOISE_FREQUENCY: f32 = 1.5;
-const NOISE_AMPLITUDE: f32 = 0.20;
-const LOD_SPLIT_FACTOR: f32 = 45.0;
+const NOISE_AMPLITUDE: f32 = 40.0;
+const LOD_SPLIT_FACTOR: f32 = 2250.0; // scaled 50x (45.0 * 50.0)
 
 // Maximum buffer capacities scaled up by 32x to support high LOD levels safely
 const MAX_VERTICES: usize = 65536 * 32; // 2,097,152 vertices
@@ -73,8 +75,8 @@ impl Default for PlanetCameraState {
             pos_unit,
             local_forward,
             look_pitch: -std::f32::consts::FRAC_PI_2,
-            elevation: 10.0,
-            max_distance: 13.0,
+            elevation: 500.0,
+            max_distance: 650.0,
         }
     }
 }
@@ -176,7 +178,7 @@ fn update_ui(
     let Ok(camera_transform) = camera_query.single() else {
         return;
     };
-    let actual_alt = camera_transform.translation.length() - 2.0;
+    let actual_alt = camera_transform.translation.length() - PLANET_RADIUS;
     let intended_alt = camera_state.elevation;
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
@@ -211,7 +213,7 @@ fn update_camera_and_state(
     let get_height_at = |dir: Vec3| -> f32 {
         let p = dir.normalize() * NOISE_FREQUENCY;
         let noise_val = planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z));
-        2.0 + noise_val * NOISE_AMPLITUDE
+        PLANET_RADIUS + noise_val * NOISE_AMPLITUDE
     };
 
     // Grab or release the cursor
@@ -265,14 +267,14 @@ fn update_camera_and_state(
     for event in mouse_wheel_events.read() {
         scroll += event.y;
     }
-    let zoom_speed = 0.08f32 * camera_state.elevation.max(0.15);
+    let zoom_speed = 0.08f32 * camera_state.elevation.max(7.5);
     camera_state.elevation -= scroll * zoom_speed;
     camera_state.elevation = camera_state.elevation.clamp(0.0, camera_state.max_distance);
 
     let dt = time.delta_secs();
 
     // Scale movement speed with elevation to make traversal comfortable at high altitudes
-    let walk_speed = (0.05f32 + camera_state.elevation * 0.2) * dt;
+    let walk_speed = (0.05f32 + camera_state.elevation * 0.004) * dt;
 
     let mut move_forward = 0.0f32;
     if keyboard.pressed(KeyCode::KeyW) {
@@ -310,9 +312,9 @@ fn update_camera_and_state(
     // Sanitize frame vectors to guarantee orthogonality and prevent float drift
     camera_state.local_forward = (camera_state.local_forward - camera_state.pos_unit * camera_state.local_forward.dot(camera_state.pos_unit)).normalize();
 
-    // Determine final camera distance: terrain heightmap + elevation + player eye height offset (0.02)
+    // Determine final camera distance: terrain heightmap + elevation + player eye height offset (EYE_HEIGHT)
     let terrain_height = get_height_at(camera_state.pos_unit);
-    let actual_distance = terrain_height + camera_state.elevation + 0.02f32;
+    let actual_distance = terrain_height + camera_state.elevation + EYE_HEIGHT;
 
     let camera_pos = camera_state.pos_unit * actual_distance;
 
@@ -766,7 +768,7 @@ fn prepare_uniforms(
     // Update global settings for compute shader
     let globals = GlobalsUniform {
         camera_pos,
-        planet_radius: 2.0,
+        planet_radius: PLANET_RADIUS,
         planet_center: Vec3::ZERO,
         noise_frequency: NOISE_FREQUENCY,
         noise_amplitude: NOISE_AMPLITUDE,
