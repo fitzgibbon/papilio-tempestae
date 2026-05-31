@@ -138,11 +138,11 @@ fn setup_scene(mut commands: Commands, mut cursor_options: Query<&mut bevy::wind
         Transform::from_rotation(Quat::from_rotation_x(-0.5)),
     ));
 
-    // Spawn 3D camera with near projection plane set to 0.0005 to prevent near-plane clipping
+    // Spawn 3D camera with default near projection plane and 90 degree FoV
     commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
-            near: 0.0005,
+            fov: std::f32::consts::FRAC_PI_2,
             ..default()
         }),
         Transform::from_xyz(0.0, 0.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -244,10 +244,10 @@ fn update_camera_and_state(
     if is_locked {
         let sensitivity = 0.002f32;
 
-        // Mouse horizontal movement directly rotates player heading (local_forward) on the sphere surface (reversed to turn right when mouse moves right)
+        // Mouse horizontal movement directly rotates player heading (local_forward) on the sphere surface
         if mouse_dx != 0.0 {
-            let d_yaw = -mouse_dx * sensitivity;
-            let local_right = camera_state.pos_unit.cross(camera_state.local_forward).normalize();
+            let d_yaw = mouse_dx * sensitivity;
+            let local_right = camera_state.local_forward.cross(camera_state.pos_unit).normalize();
             camera_state.local_forward = (camera_state.local_forward * d_yaw.cos() + local_right * d_yaw.sin()).normalize();
         }
 
@@ -302,7 +302,7 @@ fn update_camera_and_state(
     // Apply A/D movement along player body right vector (geodesic rotation)
     if move_right != 0.0 {
         let d_theta = move_right * walk_speed;
-        let local_right = camera_state.pos_unit.cross(camera_state.local_forward).normalize();
+        let local_right = camera_state.local_forward.cross(camera_state.pos_unit).normalize();
         let new_pos = (camera_state.pos_unit * d_theta.cos() + local_right * d_theta.sin()).normalize();
         camera_state.pos_unit = new_pos;
     }
