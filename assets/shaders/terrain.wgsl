@@ -470,8 +470,11 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
 }
 
 @compute @workgroup_size(64, 1, 1)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let face_id = global_id.x;
+fn main(
+    @builtin(global_invocation_id) global_id: vec3<u32>,
+    @builtin(num_workgroups) num_workgroups: vec3<u32>
+) {
+    let face_id = global_id.x + global_id.y * num_workgroups.x * 64u;
 
     // Determine the active count of input triangles
     var input_count = 20u;

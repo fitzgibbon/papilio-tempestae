@@ -1003,6 +1003,8 @@ impl render_graph::Node for PlanetRenderNode {
             // Dispatch workgroups (max possible triangles for pass k is 20 * 4^k)
             let max_triangles = 20 * 4u32.pow(k as u32);
             let workgroup_count = max_triangles.div_ceil(64);
+            let workgroups_x = workgroup_count.min(65535);
+            let workgroups_y = workgroup_count.div_ceil(65535);
 
             let mut compute_pass = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor {
                 label: Some(&format!("Planet Compute Pass Depth {}", k)),
@@ -1010,7 +1012,7 @@ impl render_graph::Node for PlanetRenderNode {
             });
             compute_pass.set_pipeline(compute_pipeline);
             compute_pass.set_bind_group(0, &compute_bind_group, &[]);
-            compute_pass.dispatch_workgroups(workgroup_count, 1, 1);
+            compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
         }
 
         // 2. Run Render Pass using indirect drawing (non-indexed)
