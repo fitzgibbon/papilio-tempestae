@@ -344,8 +344,62 @@ async fn run() {
         }
 
         let pos_unit = pos_gpu.normalize();
-        let cpu_noise = planet_shader::snoise3(pos_unit * 1.5);
-        let expected_height = 2.0 + cpu_noise * 0.20;
+        let eps = 0.01f32;
+        let mut total_disp = 0.0f32;
+        let mut accum_grad = Vec3::ZERO;
+
+        let sample_noise_rust = |p: Vec3| -> f32 {
+            planet_shader::snoise3(p)
+        };
+
+        let f0 = globals_data.noise_frequency;
+        let a0 = globals_data.noise_amplitude * 0.5;
+
+        // Octave 0
+        let p0 = pos_unit * f0;
+        let n0 = sample_noise_rust(p0);
+        let dx0 = sample_noise_rust(p0 + Vec3::new(eps, 0.0, 0.0)) - n0;
+        let dy0 = sample_noise_rust(p0 + Vec3::new(0.0, eps, 0.0)) - n0;
+        let dz0 = sample_noise_rust(p0 + Vec3::new(0.0, 0.0, eps)) - n0;
+        let g0 = Vec3::new(dx0, dy0, dz0) / eps;
+        total_disp += n0 * a0;
+        accum_grad += g0 * a0;
+
+        // Octave 1
+        let f1 = f0 * 2.0;
+        let a1 = a0 * 0.5;
+        let w1 = 0.1 + 1.9 * (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
+        let p1 = pos_unit * f1;
+        let n1 = sample_noise_rust(p1);
+        let dx1 = sample_noise_rust(p1 + Vec3::new(eps, 0.0, 0.0)) - n1;
+        let dy1 = sample_noise_rust(p1 + Vec3::new(0.0, eps, 0.0)) - n1;
+        let dz1 = sample_noise_rust(p1 + Vec3::new(0.0, 0.0, eps)) - n1;
+        let g1 = Vec3::new(dx1, dy1, dz1) / eps;
+        total_disp += n1 * a1 * w1;
+        accum_grad += g1 * a1 * w1;
+
+        // Octave 2
+        let f2 = f1 * 2.0;
+        let a2 = a1 * 0.5;
+        let w2 = 0.1 + 1.9 * (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
+        let p2 = pos_unit * f2;
+        let n2 = sample_noise_rust(p2);
+        let dx2 = sample_noise_rust(p2 + Vec3::new(eps, 0.0, 0.0)) - n2;
+        let dy2 = sample_noise_rust(p2 + Vec3::new(0.0, eps, 0.0)) - n2;
+        let dz2 = sample_noise_rust(p2 + Vec3::new(0.0, 0.0, eps)) - n2;
+        let g2 = Vec3::new(dx2, dy2, dz2) / eps;
+        total_disp += n2 * a2 * w2;
+        accum_grad += g2 * a2 * w2;
+
+        // Octave 3
+        let f3 = f2 * 2.0;
+        let a3 = a2 * 0.5;
+        let w3 = 0.1 + 1.9 * (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
+        let p3 = pos_unit * f3;
+        let n3 = sample_noise_rust(p3);
+        total_disp += n3 * a3 * w3;
+
+        let expected_height = globals_data.planet_radius + total_disp;
         let expected_pos_cpu = pos_unit * expected_height;
 
         let diff = pos_gpu.distance(expected_pos_cpu);

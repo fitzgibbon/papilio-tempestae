@@ -49,12 +49,63 @@ fn get_barycentric_point(A: vec3<f32>, B: vec3<f32>, C: vec3<f32>, u_val: f32, v
     return normalize(A * w + B * u_val + C * v_val);
 }
 
-// Displace a normalized sphere coordinate using 3D Simplex noise
+fn sample_noise(p: vec3<f32>) -> f32 {
+    return snoise3_shared(Vec3Shared(p.x, p.y, p.z));
+}
+
+// Displace a normalized sphere coordinate using 4 octaves of 3D Simplex noise with gradient modulation
 fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
-    let p = pos_unit * globals.noise_frequency;
-    let noise_val = snoise3_shared(Vec3Shared(p.x, p.y, p.z));
-    // Displace outwards from center
-    let height = globals.planet_radius + noise_val * globals.noise_amplitude;
+    let eps = 0.01;
+    var total_disp = 0.0;
+    var accum_grad = vec3<f32>(0.0, 0.0, 0.0);
+
+    // Octave 0
+    let f0 = globals.noise_frequency;
+    let a0 = globals.noise_amplitude * 0.5; // Base octave has 50% amplitude
+    let p0 = pos_unit * f0;
+    let n0 = sample_noise(p0);
+    let dx0 = sample_noise(p0 + vec3<f32>(eps, 0.0, 0.0)) - n0;
+    let dy0 = sample_noise(p0 + vec3<f32>(0.0, eps, 0.0)) - n0;
+    let dz0 = sample_noise(p0 + vec3<f32>(0.0, 0.0, eps)) - n0;
+    let g0 = vec3<f32>(dx0, dy0, dz0) / eps;
+    total_disp += n0 * a0;
+    accum_grad += g0 * a0;
+
+    // Octave 1
+    let f1 = f0 * 2.0;
+    let a1 = a0 * 0.5;
+    let w1 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
+    let p1 = pos_unit * f1;
+    let n1 = sample_noise(p1);
+    let dx1 = sample_noise(p1 + vec3<f32>(eps, 0.0, 0.0)) - n1;
+    let dy1 = sample_noise(p1 + vec3<f32>(0.0, eps, 0.0)) - n1;
+    let dz1 = sample_noise(p1 + vec3<f32>(0.0, 0.0, eps)) - n1;
+    let g1 = vec3<f32>(dx1, dy1, dz1) / eps;
+    total_disp += n1 * a1 * w1;
+    accum_grad += g1 * a1 * w1;
+
+    // Octave 2
+    let f2 = f1 * 2.0;
+    let a2 = a1 * 0.5;
+    let w2 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
+    let p2 = pos_unit * f2;
+    let n2 = sample_noise(p2);
+    let dx2 = sample_noise(p2 + vec3<f32>(eps, 0.0, 0.0)) - n2;
+    let dy2 = sample_noise(p2 + vec3<f32>(0.0, eps, 0.0)) - n2;
+    let dz2 = sample_noise(p2 + vec3<f32>(0.0, 0.0, eps)) - n2;
+    let g2 = vec3<f32>(dx2, dy2, dz2) / eps;
+    total_disp += n2 * a2 * w2;
+    accum_grad += g2 * a2 * w2;
+
+    // Octave 3
+    let f3 = f2 * 2.0;
+    let a3 = a2 * 0.5;
+    let w3 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
+    let p3 = pos_unit * f3;
+    let n3 = sample_noise(p3);
+    total_disp += n3 * a3 * w3;
+
+    let height = globals.planet_radius + total_disp;
     return globals.planet_center + pos_unit * height;
 }
 
