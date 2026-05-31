@@ -599,9 +599,9 @@ fn init_gpu_resources(
         mapped_at_creation: false,
     });
 
-    // Static uniform buffers for depth 0..9
+    // Static uniform buffers for depth 0..11
     let mut pass_buffers = Vec::new();
-    for depth in 0..9 {
+    for depth in 0..11 {
         let buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some(&format!("Planet Pass Uniforms Depth {}", depth)),
             size: 16,
@@ -962,8 +962,8 @@ impl render_graph::Node for PlanetRenderNode {
             return Ok(());
         };
 
-        // 1. Run 9 sequential compute passes to subdivide dynamically
-        for k in 0..9 {
+        // 1. Run 11 sequential compute passes to subdivide dynamically
+        for k in 0..11 {
             let (input_queue, output_queue, input_counter, output_counter) = if k % 2 == 0 {
                 (
                     &resources.queue_a,

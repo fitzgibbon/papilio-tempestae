@@ -521,8 +521,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Split threshold halves at each depth level
     let split_dist = globals.lod_split_factor / pow(2.0, f32(pass_uniforms.depth));
 
-    // Split if we are close enough and haven't hit maximum depth (8)
-    let should_split = dist_to_cam < split_dist && pass_uniforms.depth < 8u;
+    // Split if we are close enough and haven't hit maximum depth (10)
+    let should_split = dist_to_cam < split_dist && pass_uniforms.depth < 10u;
 
     if (should_split) {
         // Compute edge midpoints projected onto the sphere
