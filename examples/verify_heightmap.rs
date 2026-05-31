@@ -352,16 +352,34 @@ async fn run() {
             planet_shader::snoise3(p)
         };
 
+        let f_mask = globals_data.noise_frequency * 0.4;
+        let n_mask = sample_noise_rust(pos_unit * f_mask);
+        let mountain_density = ((n_mask * 1.8) + 0.3).clamp(0.0, 1.0);
+
+        // Octave 0
         let f0 = globals_data.noise_frequency;
         let a0 = globals_data.noise_amplitude * 0.5;
 
-        // Octave 0
-        let p0 = pos_unit * f0;
-        let n0 = sample_noise_rust(p0);
-        let dx0 = sample_noise_rust(p0 + Vec3::new(eps, 0.0, 0.0)) - n0;
-        let dy0 = sample_noise_rust(p0 + Vec3::new(0.0, eps, 0.0)) - n0;
-        let dz0 = sample_noise_rust(p0 + Vec3::new(0.0, 0.0, eps)) - n0;
+        let p0_plains = pos_unit * f0;
+        let n0_plains = sample_noise_rust(p0_plains) * 0.25;
+
+        let p0_mount = pos_unit * (f0 * 0.8);
+        let n0_mount = 1.0 - sample_noise_rust(p0_mount).abs();
+
+        let n0 = n0_plains * (1.0 - mountain_density) + (n0_mount * 1.1 - 0.3) * mountain_density;
+
+        let sample_blended_octave0 = |pos: Vec3| -> f32 {
+            let mask = ((sample_noise_rust(pos * f_mask) * 1.8) + 0.3).clamp(0.0, 1.0);
+            let plains = sample_noise_rust(pos * f0) * 0.25;
+            let mount = 1.0 - sample_noise_rust(pos * (f0 * 0.8)).abs();
+            plains * (1.0 - mask) + (mount * 1.1 - 0.3) * mask
+        };
+
+        let dx0 = sample_blended_octave0(pos_unit + Vec3::new(eps, 0.0, 0.0)) - n0;
+        let dy0 = sample_blended_octave0(pos_unit + Vec3::new(0.0, eps, 0.0)) - n0;
+        let dz0 = sample_blended_octave0(pos_unit + Vec3::new(0.0, 0.0, eps)) - n0;
         let g0 = Vec3::new(dx0, dy0, dz0) / eps;
+
         total_disp += n0 * a0;
         accum_grad += g0 * a0;
 
@@ -398,6 +416,12 @@ async fn run() {
         let p3 = pos_unit * f3;
         let n3 = sample_noise_rust(p3);
         total_disp += n3 * a3 * w3;
+
+        // Add Sedimentary Terracing Effect on slopes
+        let slope = (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
+        let terrace_pattern = (total_disp * 1.5).sin();
+        let terrace_amp = 0.8 * slope * mountain_density;
+        total_disp += terrace_pattern * terrace_amp;
 
         let expected_height = globals_data.planet_radius + total_disp;
         let expected_pos_cpu = pos_unit * expected_height;

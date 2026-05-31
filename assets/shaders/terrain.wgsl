@@ -381,21 +381,42 @@ fn sample_noise(p: vec3<f32>) -> f32 {
     return snoise3_shared(Vec3Shared(p.x, p.y, p.z));
 }
 
+fn sample_blended_octave0(pos: vec3<f32>) -> f32 {
+    let f_mask = globals.noise_frequency * 0.4;
+    let f0 = globals.noise_frequency;
+    let mask = clamp(sample_noise(pos * f_mask) * 1.8 + 0.3, 0.0, 1.0);
+    let plains = sample_noise(pos * f0) * 0.25;
+    let mount = 1.0 - abs(sample_noise(pos * (f0 * 0.8)));
+    return mix(plains, mount * 1.1 - 0.3, mask);
+}
+
 // Displace a normalized sphere coordinate using 4 octaves of 3D Simplex noise with gradient modulation
 fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
     let eps = 0.01;
     var total_disp = 0.0;
     var accum_grad = vec3<f32>(0.0, 0.0, 0.0);
 
+    let f_mask = globals.noise_frequency * 0.4;
+    let n_mask = sample_noise(pos_unit * f_mask);
+    let mountain_density = clamp(n_mask * 1.8 + 0.3, 0.0, 1.0);
+
     // Octave 0
     let f0 = globals.noise_frequency;
     let a0 = globals.noise_amplitude * 0.5; // Base octave has 50% amplitude
-    let p0 = pos_unit * f0;
-    let n0 = sample_noise(p0);
-    let dx0 = sample_noise(p0 + vec3<f32>(eps, 0.0, 0.0)) - n0;
-    let dy0 = sample_noise(p0 + vec3<f32>(0.0, eps, 0.0)) - n0;
-    let dz0 = sample_noise(p0 + vec3<f32>(0.0, 0.0, eps)) - n0;
+
+    let p0_plains = pos_unit * f0;
+    let n0_plains = sample_noise(p0_plains) * 0.25;
+
+    let p0_mount = pos_unit * (f0 * 0.8);
+    let n0_mount = 1.0 - abs(sample_noise(p0_mount));
+
+    let n0 = mix(n0_plains, n0_mount * 1.1 - 0.3, mountain_density);
+
+    let dx0 = sample_blended_octave0(pos_unit + vec3<f32>(eps, 0.0, 0.0)) - n0;
+    let dy0 = sample_blended_octave0(pos_unit + vec3<f32>(0.0, eps, 0.0)) - n0;
+    let dz0 = sample_blended_octave0(pos_unit + vec3<f32>(0.0, 0.0, eps)) - n0;
     let g0 = vec3<f32>(dx0, dy0, dz0) / eps;
+
     total_disp += n0 * a0;
     accum_grad += g0 * a0;
 
@@ -432,6 +453,12 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
     let p3 = pos_unit * f3;
     let n3 = sample_noise(p3);
     total_disp += n3 * a3 * w3;
+
+    // Add Sedimentary Terracing Effect on slopes
+    let slope = clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
+    let terrace_pattern = sin(total_disp * 1.5);
+    let terrace_amp = 0.8 * slope * mountain_density;
+    total_disp += terrace_pattern * terrace_amp;
 
     let height = globals.planet_radius + total_disp;
     return globals.planet_center + pos_unit * height;
