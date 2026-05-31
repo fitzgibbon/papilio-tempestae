@@ -42,24 +42,48 @@ fn main() {
 // 1. CPU State and Input Management
 // ---------------------------------------------------------------------------
 
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone)]
 struct PlanetCameraState {
-    latitude: f32,
-    longitude: f32,
-    distance: f32,
+    pos_unit: Vec3,
+    local_forward: Vec3,
+    look_pitch: f32,
+    elevation: f32,
     max_distance: f32,
+}
+
+impl Default for PlanetCameraState {
+    fn default() -> Self {
+        let latitude = 0.1f32;
+        let longitude = 0.0f32;
+        let y_u = latitude.sin();
+        let r_xz_u = latitude.cos();
+        let x_u = r_xz_u * longitude.sin();
+        let z_u = r_xz_u * longitude.cos();
+        let pos_unit = Vec3::new(x_u, y_u, z_u);
+
+        let local_up = pos_unit;
+        let local_right = if local_up.y.abs() > 0.99 {
+            Vec3::X.cross(local_up).normalize()
+        } else {
+            Vec3::Y.cross(local_up).normalize()
+        };
+        let local_forward = local_right.cross(local_up).normalize();
+
+        Self {
+            pos_unit,
+            local_forward,
+            look_pitch: -std::f32::consts::FRAC_PI_2,
+            elevation: 10.0,
+            max_distance: 13.0,
+        }
+    }
 }
 
 struct PlanetRenderPlugin;
 
 impl Plugin for PlanetRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(PlanetCameraState {
-            latitude: 0.1,
-            longitude: 0.0,
-            distance: 10.0,
-            max_distance: 13.0,
-        })
+        app.insert_resource(PlanetCameraState::default())
         .add_systems(Startup, setup_scene)
         .add_systems(Update, (update_camera_and_state, update_ui));
 
@@ -98,7 +122,13 @@ impl Plugin for PlanetRenderPlugin {
 #[derive(Component)]
 struct AltitudeText;
 
-fn setup_scene(mut commands: Commands) {
+fn setup_scene(mut commands: Commands, mut cursor_options: Query<&mut bevy::window::CursorOptions>) {
+    // Grab and lock the cursor at startup so mouselook is active immediately
+    if let Ok(mut cursor) = cursor_options.single_mut() {
+        cursor.visible = false;
+        cursor.grab_mode = bevy::window::CursorGrabMode::Locked;
+    }
+
     // Spawn directional light representing the sun
     commands.spawn((
         DirectionalLight {
@@ -147,7 +177,7 @@ fn update_ui(
         return;
     };
     let actual_alt = camera_transform.translation.length() - 2.0;
-    let intended_alt = camera_state.distance;
+    let intended_alt = camera_state.elevation;
     let fps = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|fps| fps.smoothed())
@@ -169,6 +199,8 @@ fn update_camera_and_state(
     mut camera_query: Query<&mut Transform, With<Camera3d>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut app_exit_events: MessageWriter<AppExit>,
+    mut cursor_options: Query<&mut bevy::window::CursorOptions>,
+    time: Res<Time>,
 ) {
     // 1. Handle KeyQ to quit the application
     if keyboard.just_pressed(KeyCode::KeyQ) {
@@ -182,75 +214,123 @@ fn update_camera_and_state(
         2.0 + noise_val * NOISE_AMPLITUDE
     };
 
-    // Zoom with scroll wheel (proportional zoom speed for smooth descent)
-    let mut scroll = 0.0;
+    // Grab or release the cursor
+    if mouse_buttons.just_pressed(MouseButton::Left) {
+        if let Ok(mut cursor) = cursor_options.single_mut() {
+            cursor.visible = false;
+            cursor.grab_mode = bevy::window::CursorGrabMode::Locked;
+        }
+    }
+    if keyboard.just_pressed(KeyCode::Escape) {
+        if let Ok(mut cursor) = cursor_options.single_mut() {
+            cursor.visible = true;
+            cursor.grab_mode = bevy::window::CursorGrabMode::None;
+        }
+    }
+
+    // Accumulate mouse movement for mouselook if cursor is locked
+    let mut mouse_dx = 0.0f32;
+    let mut mouse_dy = 0.0f32;
+    for event in mouse_motion_events.read() {
+        mouse_dx += event.delta.x;
+        mouse_dy += event.delta.y;
+    }
+
+    let is_locked = cursor_options
+        .single()
+        .map(|c| c.grab_mode == bevy::window::CursorGrabMode::Locked)
+        .unwrap_or(false);
+
+    if is_locked {
+        let sensitivity = 0.002f32;
+
+        // Mouse horizontal movement directly rotates player heading (local_forward) on the sphere surface (reversed to turn right when mouse moves right)
+        if mouse_dx != 0.0 {
+            let d_yaw = -mouse_dx * sensitivity;
+            let local_right = camera_state.pos_unit.cross(camera_state.local_forward).normalize();
+            camera_state.local_forward = (camera_state.local_forward * d_yaw.cos() + local_right * d_yaw.sin()).normalize();
+        }
+
+        // Mouse vertical movement changes look pitch relative to the horizon (reversed so pushing mouse up pitches down)
+        camera_state.look_pitch += mouse_dy * sensitivity;
+        // Clamp pitch to prevent going past straight down / straight up
+        camera_state.look_pitch = camera_state.look_pitch.clamp(
+            -std::f32::consts::FRAC_PI_2 + 0.005,
+            std::f32::consts::FRAC_PI_2 - 0.005,
+        );
+    }
+
+    // Zoom (elevation) with scroll wheel
+    let mut scroll = 0.0f32;
     for event in mouse_wheel_events.read() {
         scroll += event.y;
     }
-    let zoom_speed = 0.08 * camera_state.distance.max(0.15);
-    camera_state.distance -= scroll * zoom_speed;
-    camera_state.distance = camera_state.distance.clamp(0.002, camera_state.max_distance);
+    let zoom_speed = 0.08f32 * camera_state.elevation.max(0.15);
+    camera_state.elevation -= scroll * zoom_speed;
+    camera_state.elevation = camera_state.elevation.clamp(0.0, camera_state.max_distance);
 
-    // Orbit with left click drag
-    if mouse_buttons.pressed(MouseButton::Left) {
-        for event in mouse_motion_events.read() {
-            camera_state.longitude -= event.delta.x * 0.005;
-            camera_state.latitude += event.delta.y * 0.005;
-            camera_state.latitude = camera_state.latitude.clamp(
-                -std::f32::consts::FRAC_PI_2 + 0.05,
-                std::f32::consts::FRAC_PI_2 - 0.05,
-            );
-        }
-    } else {
-        // Drain events anyway
-        let _ = mouse_motion_events.read().count();
+    let dt = time.delta_secs();
+
+    // Scale movement speed with elevation to make traversal comfortable at high altitudes
+    let walk_speed = (0.05f32 + camera_state.elevation * 0.2) * dt;
+
+    let mut move_forward = 0.0f32;
+    if keyboard.pressed(KeyCode::KeyW) {
+        move_forward += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyS) {
+        move_forward -= 1.0;
     }
 
-    // Position in spherical coordinates: calculate directional unit vector first
-    let y_u = camera_state.latitude.sin();
-    let r_xz_u = camera_state.latitude.cos();
-    let x_u = r_xz_u * camera_state.longitude.sin();
-    let z_u = r_xz_u * camera_state.longitude.cos();
-    let pos_unit = Vec3::new(x_u, y_u, z_u);
+    let mut move_right = 0.0f32;
+    if keyboard.pressed(KeyCode::KeyD) {
+        move_right += 1.0;
+    }
+    if keyboard.pressed(KeyCode::KeyA) {
+        move_right -= 1.0;
+    }
 
-    // Calculate actual distance from center by adding local terrain height and the intended height above surface
-    let height = get_height_at(pos_unit);
-    let actual_distance = height + camera_state.distance;
+    // Apply W/S movement along player body forward vector (geodesic rotation)
+    if move_forward != 0.0 {
+        let d_theta = move_forward * walk_speed;
+        let new_pos = (camera_state.pos_unit * d_theta.cos() + camera_state.local_forward * d_theta.sin()).normalize();
+        let new_forward = (camera_state.local_forward * d_theta.cos() - camera_state.pos_unit * d_theta.sin()).normalize();
+        camera_state.pos_unit = new_pos;
+        camera_state.local_forward = new_forward;
+    }
+
+    // Apply A/D movement along player body right vector (geodesic rotation)
+    if move_right != 0.0 {
+        let d_theta = move_right * walk_speed;
+        let local_right = camera_state.pos_unit.cross(camera_state.local_forward).normalize();
+        let new_pos = (camera_state.pos_unit * d_theta.cos() + local_right * d_theta.sin()).normalize();
+        camera_state.pos_unit = new_pos;
+    }
+
+    // Sanitize frame vectors to guarantee orthogonality and prevent float drift
+    camera_state.local_forward = (camera_state.local_forward - camera_state.pos_unit * camera_state.local_forward.dot(camera_state.pos_unit)).normalize();
+
+    // Determine final camera distance: terrain heightmap + elevation + player eye height offset (0.02)
+    let terrain_height = get_height_at(camera_state.pos_unit);
+    let actual_distance = terrain_height + camera_state.elevation + 0.02f32;
+
+    let camera_pos = camera_state.pos_unit * actual_distance;
+
+    // Construct right-handed orthonormal camera orientation frame (Right, Up, -Forward)
+    // to avoid looking_to's colinear up/look singularity when looking straight down/up.
+    let camera_up = camera_state.pos_unit * camera_state.look_pitch.cos() - camera_state.local_forward * camera_state.look_pitch.sin();
+    let camera_forward = (camera_state.local_forward * camera_state.look_pitch.cos() + camera_state.pos_unit * camera_state.look_pitch.sin()).normalize();
+    let camera_right = camera_forward.cross(camera_up).normalize();
+    let camera_rotation = Quat::from_mat3(&Mat3::from_cols(
+        camera_right,
+        camera_up,
+        -camera_forward,
+    ));
 
     let Ok(mut transform) = camera_query.single_mut() else {
         return;
     };
-
-    let camera_pos = pos_unit * actual_distance;
-
-    let local_up = pos_unit;
-    // Robust local axes calculation to avoid NaNs near the poles
-    let local_right = if local_up.y.abs() > 0.99 {
-        Vec3::X.cross(local_up).normalize()
-    } else {
-        Vec3::Y.cross(local_up).normalize()
-    };
-    let local_forward = local_right.cross(local_up).normalize();
-
-    // Track a point on the surface of the planet that is a fraction of the way to the horizon.
-    // The horizon angle from the camera is acos(R / d).
-    let r = 2.0; // Planet radius
-    let d = actual_distance;
-    let horizon_angle = (r / d).clamp(0.0, 1.0).acos();
-
-    // Look at a target point on the surface at a fraction of the horizon angle (85% to look towards the horizon)
-    let target_angle = 0.85 * horizon_angle;
-
-    // Target direction from planet center
-    let target_dir = (local_up * target_angle.cos() + local_forward * target_angle.sin()).normalize();
-    // Evaluate actual displaced height at target direction and add safety elevation (+0.01) to prevent looking under the shell
-    let target_height = get_height_at(target_dir) + 0.01;
-    let target_pos = target_dir * target_height;
-
-    // Look direction is from the camera to the target point
-    let look_dir = (target_pos - camera_pos).normalize();
-
-    *transform = Transform::from_translation(camera_pos).looking_to(look_dir, local_up);
+    *transform = Transform::from_translation(camera_pos).with_rotation(camera_rotation);
 }
 
 // ---------------------------------------------------------------------------

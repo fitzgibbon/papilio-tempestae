@@ -140,6 +140,17 @@ mod tests {
 
     #[test]
     fn test_noise_values() {
+        let latitude = 0.1f32;
+        let longitude = 0.0f32;
+        let y_u = latitude.sin();
+        let r_xz_u = latitude.cos();
+        let x_u = r_xz_u * longitude.sin();
+        let z_u = r_xz_u * longitude.cos();
+        let start_pos = Vec3::new(x_u, y_u, z_u);
+        let p = start_pos * 1.5;
+        println!("Starting pos: {:?}", start_pos);
+        println!("Noise at starting pos * 1.5: {}", snoise3(p));
+
         for &(x, y, z) in &[
             (0.1, 0.2, 0.3),
             (0.5, -0.2, 0.8),

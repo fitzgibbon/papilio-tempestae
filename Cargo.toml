@@ -7,7 +7,7 @@ edition = "2024"
 bevy = "*"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 noiz = "*"
-wgpu = "*"
+wgpu = "27.0.1"
 planet-shader = { path = "planet-shader" }
 
 [build-dependencies]
