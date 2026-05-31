@@ -747,6 +747,16 @@ fn init_gpu_resources(
                 },
                 count: None,
             },
+            BindGroupLayoutEntry {
+                binding: 2,
+                visibility: ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ],
     };
 
@@ -950,6 +960,7 @@ impl render_graph::Node for PlanetRenderNode {
             &BindGroupEntries::sequential((
                 render_view.0.binding().unwrap(),
                 resources.vertex_buffer.as_entire_buffer_binding(),
+                render_globals.0.binding().unwrap(),
             )),
         );
 

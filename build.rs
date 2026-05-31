@@ -56,8 +56,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let final_shader = template.replace("// {{SIMPLEX_NOISE}}", &final_wgsl);
     fs::write("assets/shaders/terrain.wgsl", final_shader)?;
 
+    // Integrate with the render shader template
+    let render_template = fs::read_to_string("assets/shaders/render_shaders.template.wgsl")?;
+    let final_render_shader = render_template.replace("// {{SIMPLEX_NOISE}}", &final_wgsl);
+    fs::write("assets/shaders/render_shaders.wgsl", final_render_shader)?;
+
     println!("cargo:rerun-if-changed=planet-shader/src/lib.rs");
     println!("cargo:rerun-if-changed=assets/shaders/terrain.template.wgsl");
+    println!("cargo:rerun-if-changed=assets/shaders/render_shaders.template.wgsl");
 
     Ok(())
 }
