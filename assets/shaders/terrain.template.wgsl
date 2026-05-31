@@ -86,7 +86,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let C = tri.v2.xyz;
 
     let center = (A + B + C) / 3.0;
-    let world_center = globals.planet_center + normalize(center) * globals.planet_radius;
+    let world_center = get_displaced_vertex(normalize(center));
     let bounding_radius = max(distance(center, A), max(distance(center, B), distance(center, C))) * globals.planet_radius + globals.noise_amplitude;
 
     // 1. Frustum Culling
