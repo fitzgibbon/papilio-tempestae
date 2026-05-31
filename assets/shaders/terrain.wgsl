@@ -401,7 +401,7 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
 
     // Octave 1
     let f1 = f0 * 2.0;
-    let a1 = a0 * 0.5;
+    let a1 = a0 * 0.35;
     let w1 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
     let p1 = pos_unit * f1;
     let n1 = sample_noise(p1);
@@ -414,7 +414,7 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
 
     // Octave 2
     let f2 = f1 * 2.0;
-    let a2 = a1 * 0.5;
+    let a2 = a1 * 0.35;
     let w2 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
     let p2 = pos_unit * f2;
     let n2 = sample_noise(p2);
@@ -427,7 +427,7 @@ fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
 
     // Octave 3
     let f3 = f2 * 2.0;
-    let a3 = a2 * 0.5;
+    let a3 = a2 * 0.35;
     let w3 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
     let p3 = pos_unit * f3;
     let n3 = sample_noise(p3);
