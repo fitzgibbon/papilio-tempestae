@@ -11,6 +11,7 @@ use bevy::{
         Render, RenderApp, RenderStartup,
     },
     core_pipeline::core_3d::graph::Node3d,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
 };
 use bytemuck::{Pod, Zeroable};
 
@@ -31,6 +32,7 @@ fn main() {
         .add_plugins((
             DefaultPlugins,
             PlanetRenderPlugin,
+            FrameTimeDiagnosticsPlugin::default(),
         ))
         .insert_resource(ClearColor(Color::BLACK))
         .run();
@@ -119,7 +121,7 @@ fn setup_scene(mut commands: Commands) {
 
     // Spawn UI Text for Altitude Overlay
     commands.spawn((
-        Text::new("Intended Altitude: 0.0000\nActual Altitude: 0.0000"),
+        Text::new("Intended Altitude: 0.0000\nActual Altitude: 0.0000\nFPS: 0.0"),
         TextFont {
             font_size: 20.0,
             ..default()
@@ -139,17 +141,22 @@ fn update_ui(
     camera_state: Res<PlanetCameraState>,
     camera_query: Query<&Transform, With<Camera3d>>,
     mut text_query: Query<&mut Text, With<AltitudeText>>,
+    diagnostics: Res<DiagnosticsStore>,
 ) {
     let Ok(camera_transform) = camera_query.single() else {
         return;
     };
     let actual_alt = camera_transform.translation.length() - 2.0;
     let intended_alt = camera_state.distance;
+    let fps = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|fps| fps.smoothed())
+        .unwrap_or(0.0);
 
     for mut text in text_query.iter_mut() {
         text.0 = format!(
-            "Intended Altitude: {:.4}\nActual Altitude: {:.4}",
-            intended_alt, actual_alt
+            "Intended Altitude: {:.4}\nActual Altitude: {:.4}\nFPS: {:.1}",
+            intended_alt, actual_alt, fps
         );
     }
 }

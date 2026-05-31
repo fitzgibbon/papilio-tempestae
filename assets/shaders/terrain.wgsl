@@ -413,7 +413,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let B = tri.v1.xyz;
     let C = tri.v2.xyz;
 
-    // Compute bounding sphere of this triangle
     let center = (A + B + C) / 3.0;
     let world_center = globals.planet_center + normalize(center) * globals.planet_radius;
     let bounding_radius = max(distance(center, A), max(distance(center, B), distance(center, C))) * globals.planet_radius + globals.noise_amplitude;
