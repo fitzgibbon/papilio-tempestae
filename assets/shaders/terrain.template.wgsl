@@ -127,7 +127,7 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
 
 // Displace a normalized sphere coordinate using 4 octaves of 3D Simplex noise
 fn get_displaced_vertex(pos_unit: vec3<f32>) -> vec3<f32> {
-    let total_disp = max(get_displacement(pos_unit).displacement, 0.0);
+    let total_disp = get_displacement(pos_unit).displacement;
     let height = globals.planet_radius + total_disp;
     return globals.planet_center + pos_unit * height;
 }

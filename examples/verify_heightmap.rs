@@ -403,7 +403,7 @@ async fn run() {
         elevation += terrace_pattern * terrace_amp;
 
         // Scale by globals.noise_amplitude
-        total_disp = (elevation * (globals_data.noise_amplitude * 0.025)).max(0.0);
+        total_disp = elevation * (globals_data.noise_amplitude * 0.025);
 
         let expected_height = globals_data.planet_radius + total_disp;
         let expected_pos_cpu = pos_unit * expected_height;

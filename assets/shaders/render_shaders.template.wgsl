@@ -216,10 +216,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let temp_noise = disp_data.temp_noise;
     let humid_noise = disp_data.humid_noise;
 
-    var normal = radial_dir;
-    if (displacement >= 0.0) {
-        normal = get_heightmap_normal(radial_dir, displacement);
-    }
+    // Compute heightmap normals for ALL terrain (including underwater)
+    let normal = get_heightmap_normal(radial_dir, displacement);
 
     let view_dir = normalize(view_uniforms.camera_pos - in.world_position);
     let light_dir = normalize(view_uniforms.light_dir);
@@ -230,37 +228,29 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let slope = 1.0 - dot(normal, radial_dir);
 
     // Climate Calculations
-    // 1. Temperature: perturbed equator-to-pole gradient
     let perturbed_dir = normalize(radial_dir + temp_noise * 0.20);
     let t_base = 1.0 - abs(perturbed_dir.y);
-    // Apply altitude cooling lapse rate (peaks are colder)
     let temp = clamp(t_base - max(displacement, 0.0) * 0.04, 0.0, 1.0);
-
-    // 2. Humidity: reuse humid_noise (already sampled n_f0)
     let humid = clamp(humid_noise * 0.5 + 0.5, 0.0, 1.0);
 
     // Multi-biome coloring
     var biome_color = vec3<f32>(0.0);
 
     if (displacement < 0.0) {
-        // Ocean: color based on temperature and depth
-        let cold_ocean = vec3<f32>(0.06, 0.10, 0.18);
-        let warm_ocean = vec3<f32>(0.01, 0.38, 0.46);
-        let base_ocean = mix(cold_ocean, warm_ocean, temp);
-        
-        // Deepen the ocean color based on distance from land (smooth land_mask continental shelf)
-        let depth_factor = clamp(1.0 - land_mask, 0.0, 1.0);
-        let deep_ocean = vec3<f32>(0.005, 0.02, 0.08); // very dark navy
-        
-        biome_color = mix(base_ocean, deep_ocean, depth_factor * 0.9);
+        // Underwater seabed: muted sandy/rocky colors
+        let depth = -displacement;
+        let shallow_seabed = vec3<f32>(0.45, 0.40, 0.30); // sandy
+        let deep_seabed = vec3<f32>(0.15, 0.13, 0.10);    // dark sediment
+        let depth_t = clamp(depth / 3.0, 0.0, 1.0);
+        biome_color = mix(shallow_seabed, deep_seabed, depth_t);
     } else if (displacement < 0.05) {
-        // Beach: transition based on temperature
+        // Beach
         let t_beach = displacement / 0.05;
-        
-        let cold_beach = vec3<f32>(0.25, 0.24, 0.24); // volcanic black sand
-        let warm_beach = vec3<f32>(0.76, 0.68, 0.52); // golden sand
-        let tropical_beach = vec3<f32>(0.86, 0.83, 0.76); // white sand
-        
+
+        let cold_beach = vec3<f32>(0.25, 0.24, 0.24);
+        let warm_beach = vec3<f32>(0.76, 0.68, 0.52);
+        let tropical_beach = vec3<f32>(0.86, 0.83, 0.76);
+
         var beach_color = vec3<f32>(0.0);
         if (temp < 0.35) {
             beach_color = cold_beach;
@@ -269,10 +259,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         } else {
             beach_color = tropical_beach;
         }
-        
-        // Blend beach with ocean at the shoreline
-        let ocean_color_at_shore = mix(vec3<f32>(0.06, 0.10, 0.18), vec3<f32>(0.01, 0.38, 0.46), temp);
-        biome_color = mix(ocean_color_at_shore, beach_color, t_beach);
+
+        let seabed_color = vec3<f32>(0.45, 0.40, 0.30);
+        biome_color = mix(seabed_color, beach_color, t_beach);
     } else {
         // Land
         biome_color = get_biome_color(temp, humid, displacement, slope, mountain_factor);
@@ -282,19 +271,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let shading = diffuse + ambient;
     var face_color = biome_color * shading;
 
-    // 4. Specular highlight on water
-    if (displacement < 0.0) {
-        let half_dir = normalize(light_dir + view_dir);
-        let specular = pow(max(dot(normal, half_dir), 0.0), 64.0) * 0.7;
-        face_color = face_color + vec3<f32>(specular);
-    }
-
-    // 5. Rayleigh scattering representation (Rim Light / Atmospheric Glow)
+    // Rayleigh scattering (atmospheric rim glow)
     let rim = pow(1.0 - max(dot(view_dir, radial_dir), 0.0), 4.0);
     let rim_color = vec3<f32>(0.35, 0.55, 1.0) * rim * 0.45 * shading;
     face_color = face_color + rim_color;
 
-    // 6. Ground Fog / Atmospheric Haze (fades out as camera goes to space)
+    // Ground Fog / Atmospheric Haze
     let distance_to_cam = distance(view_uniforms.camera_pos, in.world_position);
     let cam_height = length(view_uniforms.camera_pos);
     let fog_density = 0.002;
@@ -303,13 +285,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let fog_color = vec3<f32>(0.55, 0.68, 0.85) * shading;
     let final_terrain_color = mix(face_color, fog_color, fog_factor * fog_intensity);
 
-    // 7. Toggleable wireframe
+    // Toggleable wireframe
     var final_color = final_terrain_color;
     if (view_uniforms.show_wireframe > 0.5) {
         let d = fwidth(in.barycentric);
         let a3 = smoothstep(vec3<f32>(0.0), d * 1.2, in.barycentric);
         let edge_factor = min(a3.x, min(a3.y, a3.z));
-        let wireframe_color = vec3<f32>(1.0, 1.0, 1.0); // White
+        let wireframe_color = vec3<f32>(1.0, 1.0, 1.0);
         let blend_factor = mix(0.5, 1.0, edge_factor);
         final_color = mix(wireframe_color, final_terrain_color, blend_factor);
     }

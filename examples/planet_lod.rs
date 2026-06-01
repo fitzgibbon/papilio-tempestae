@@ -17,6 +17,10 @@ use bytemuck::{Pod, Zeroable};
 
 const SHADER_COMPUTE_PATH: &str = "shaders/terrain.wgsl";
 const SHADER_RENDER_PATH: &str = "shaders/render_shaders.wgsl";
+const SHADER_WATER_PATH: &str = "shaders/water.wgsl";
+
+// Water sphere: 20 base faces * 4^4 subdivisions = 5120 triangles = 15360 vertices
+const WATER_VERTEX_COUNT: u32 = 15360;
 
 // Shader configuration constants
 const PLANET_RADIUS: f32 = 100.0;
@@ -283,7 +287,7 @@ fn update_camera_and_state(
         elevation += terrace_pattern * terrace_amp;
 
         // Scale by globals.noise_amplitude
-        let total_disp = (elevation * (NOISE_AMPLITUDE * 0.025)).max(0.0);
+        let total_disp = elevation * (NOISE_AMPLITUDE * 0.025);
 
         PLANET_RADIUS + total_disp
     };
@@ -465,6 +469,7 @@ struct GpuTriangle {
 struct PlanetPipeline {
     compute_pipeline_id: CachedComputePipelineId,
     render_pipeline_id: CachedRenderPipelineId,
+    water_pipeline_id: CachedRenderPipelineId,
 }
 
 #[derive(Resource)]
@@ -789,9 +794,75 @@ fn init_gpu_resources(
         zero_initialize_workgroup_memory: false,
     });
 
+    // Water sphere render pipeline (alpha blending, no depth write)
+    let water_shader = asset_server.load(SHADER_WATER_PATH);
+
+    let water_layout = BindGroupLayoutDescriptor {
+        label: std::borrow::Cow::Borrowed("Water Bind Group Layout"),
+        entries: vec![
+            BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            BindGroupLayoutEntry {
+                binding: 1,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    };
+
+    let water_pipeline_id = pipeline_cache.queue_render_pipeline(RenderPipelineDescriptor {
+        label: Some(std::borrow::Cow::Borrowed("Water Render Pipeline")),
+        layout: vec![water_layout],
+        vertex: VertexState {
+            shader: water_shader.clone(),
+            entry_point: Some(std::borrow::Cow::Borrowed("vs_main")),
+            buffers: vec![],
+            shader_defs: vec![],
+        },
+        fragment: Some(FragmentState {
+            shader: water_shader,
+            entry_point: Some(std::borrow::Cow::Borrowed("fs_main")),
+            targets: vec![Some(ColorTargetState {
+                format: TextureFormat::Rgba8UnormSrgb,
+                blend: Some(BlendState::ALPHA_BLENDING),
+                write_mask: ColorWrites::ALL,
+            })],
+            shader_defs: vec![],
+        }),
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            cull_mode: Some(Face::Back),
+            ..default()
+        },
+        depth_stencil: Some(DepthStencilState {
+            format: TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: CompareFunction::GreaterEqual,
+            stencil: StencilState::default(),
+            bias: DepthBiasState::default(),
+        }),
+        multisample: MultisampleState::default(),
+        push_constant_ranges: vec![],
+        zero_initialize_workgroup_memory: false,
+    });
+
     commands.insert_resource(PlanetPipeline {
         compute_pipeline_id,
         render_pipeline_id,
+        water_pipeline_id,
     });
 
     commands.insert_resource(PlanetGpuResources {
@@ -924,10 +995,14 @@ impl render_graph::Node for PlanetRenderNode {
         let Some(render_pipeline) = pipeline_cache.get_render_pipeline(pipeline.render_pipeline_id) else {
             return Ok(());
         };
+        let Some(water_pipeline) = pipeline_cache.get_render_pipeline(pipeline.water_pipeline_id) else {
+            return Ok(());
+        };
 
         // Query layouts dynamically from compiled pipelines
         let compute_layout: BindGroupLayout = compute_pipeline.get_bind_group_layout(0).into();
         let render_layout: BindGroupLayout = render_pipeline.get_bind_group_layout(0).into();
+        let water_layout: BindGroupLayout = water_pipeline.get_bind_group_layout(0).into();
 
         let render_bind_group = render_context.render_device().create_bind_group(
             None,
@@ -935,6 +1010,15 @@ impl render_graph::Node for PlanetRenderNode {
             &BindGroupEntries::sequential((
                 render_view.0.binding().unwrap(),
                 resources.vertex_buffer.as_entire_buffer_binding(),
+                render_globals.0.binding().unwrap(),
+            )),
+        );
+
+        let water_bind_group = render_context.render_device().create_bind_group(
+            None,
+            &water_layout,
+            &BindGroupEntries::sequential((
+                render_view.0.binding().unwrap(),
                 render_globals.0.binding().unwrap(),
             )),
         );
@@ -1001,7 +1085,7 @@ impl render_graph::Node for PlanetRenderNode {
             compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
         }
 
-        // 2. Run Render Pass using indirect drawing (non-indexed)
+        // 2. Render terrain (opaque, indirect draw)
         {
             let mut render_pass = render_context.command_encoder().begin_render_pass(&RenderPassDescriptor {
                 label: Some("Planet Render Pass"),
@@ -1009,7 +1093,7 @@ impl render_graph::Node for PlanetRenderNode {
                     view: view_target.main_texture_view(),
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Load, // Preserve background/cleared pixels
+                        load: LoadOp::Load,
                         store: StoreOp::Store,
                     },
                     depth_slice: None,
@@ -1017,7 +1101,7 @@ impl render_graph::Node for PlanetRenderNode {
                 depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                     view: view_depth.view(),
                     depth_ops: Some(Operations {
-                        load: LoadOp::Load, // Preserve existing depth
+                        load: LoadOp::Load,
                         store: StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -1028,6 +1112,35 @@ impl render_graph::Node for PlanetRenderNode {
             render_pass.set_pipeline(render_pipeline);
             render_pass.set_bind_group(0, &render_bind_group, &[]);
             render_pass.draw_indirect(&resources.indirect_buffer, 0);
+        }
+
+        // 3. Render translucent water sphere on top
+        {
+            let mut water_pass = render_context.command_encoder().begin_render_pass(&RenderPassDescriptor {
+                label: Some("Water Render Pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: view_target.main_texture_view(),
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: view_depth.view(),
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Load,
+                        store: StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            water_pass.set_pipeline(water_pipeline);
+            water_pass.set_bind_group(0, &water_bind_group, &[]);
+            water_pass.draw(0..WATER_VERTEX_COUNT, 0..1);
         }
 
         Ok(())
