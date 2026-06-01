@@ -232,10 +232,7 @@ fn update_camera_and_state(
 
         let f0 = NOISE_FREQUENCY;
         
-        // Sample shared noise frequencies to stay within the 33-call budget (9 unique calls)
-        let n_f0_3 = sample_noise_rust(pos_unit * (f0 * 0.3));
-        let n_f0_6 = sample_noise_rust(pos_unit * (f0 * 0.6));
-        let n_f0_12 = sample_noise_rust(pos_unit * (f0 * 1.2));
+        // Sample exactly 6 shared noise frequencies for a unified heightmap
         let n_f0 = sample_noise_rust(pos_unit * f0);
         let n_f0_2 = sample_noise_rust(pos_unit * (f0 * 2.0));
         let n_f0_4 = sample_noise_rust(pos_unit * (f0 * 4.0));
@@ -243,29 +240,42 @@ fn update_camera_and_state(
         let n_f0_16 = sample_noise_rust(pos_unit * (f0 * 16.0));
         let n_f0_32 = sample_noise_rust(pos_unit * (f0 * 32.0));
 
-        // 1. Continent / Ocean mask (large scale) - 3 Octaves for organic coastlines
-        let continent_noise = n_f0_3 + n_f0_6 * 0.4 + n_f0_12 * 0.15;
-        let land_mask = (continent_noise * 2.0 + 0.3).clamp(0.0, 1.0);
+        // Combine 6 octaves into a single heightmap using heterogeneous multifractal (slope scaling)
+        let mut h = n_f0;
+        
+        let w1 = 0.15 + 0.85 * (1.0 - n_f0.abs());
+        h += n_f0_2 * 0.5 * w1;
+        
+        let w2 = 0.15 + 0.85 * (1.0 - n_f0_2.abs());
+        h += n_f0_4 * 0.25 * w2;
+        
+        let w3 = 0.15 + 0.85 * (1.0 - n_f0_4.abs());
+        h += n_f0_8 * 0.125 * w3;
+        
+        let w4 = 0.15 + 0.85 * (1.0 - n_f0_8.abs());
+        h += n_f0_16 * 0.0625 * w4;
+        
+        let w5 = 0.15 + 0.85 * (1.0 - n_f0_16.abs());
+        h += n_f0_32 * 0.03125 * w5;
 
-        // 2. Mountain selector (where mountain ranges form) - 2 Octaves for winding chains
-        let mountain_selector = n_f0_6 + n_f0_12 * 0.3;
-        let mountain_factor = (mountain_selector * 1.8 - 0.2).clamp(0.0, 1.0) * land_mask;
+        // Define sea level
+        let sea_level = 0.0;
 
-        // 3. Plains elevation (bumpy hills / plains) - 6 Octaves (ultra-bumpiness)
-        let plains = n_f0 * 0.25 + 0.25 + n_f0_2 * 0.12 + n_f0_4 * 0.06 + n_f0_8 * 0.03 + n_f0_16 * 0.015 + n_f0_32 * 0.008;
+        // land_mask: smooth transition at shorelines
+        let land_mask = ((h - sea_level) * 10.0).clamp(0.0, 1.0);
 
-        // 4. Mountain elevation (rugged peaks) - 6 Octaves (rugged detail)
-        let n0_mount = 1.0 - n_f0.abs();
-        let mountain = 1.0 + (n0_mount * 1.3 - 0.3 + n_f0_2 * 0.35 + n_f0_4 * 0.2 + n_f0_8 * 0.08 + n_f0_16 * 0.04 + n_f0_32 * 0.02) * 8.0;
+        // mountain_factor: high altitude areas smoothly become mountains
+        let mountain_factor = ((h - 0.15) * 3.0).clamp(0.0, 1.0) * land_mask;
 
-        // 5. Ocean elevation (deep basins)
-        let ocean_floor = -5.0 + n_f0 * 1.0;
-
-        // Mix land elevation (plains vs mountains)
-        let land_elevation = plains * (1.0 - mountain_factor * mountain_factor) + mountain * (mountain_factor * mountain_factor);
-
-        // Mix ocean and land
-        let mut elevation = ocean_floor * (1.0 - land_mask) + land_elevation * land_mask;
+        let mut elevation = if h < sea_level {
+            // Ocean floor: scaled basin
+            -5.0 + h * 2.5
+        } else {
+            // Land: plains vs mountains
+            let plains = h * 1.5 + 0.25;
+            let mountain = h * 1.5 + h.powi(2) * 15.0;
+            plains * (1.0 - mountain_factor * mountain_factor) + mountain * (mountain_factor * mountain_factor)
+        };
 
         // 6. Terracing in mountains
         let terrace_pattern = (elevation * 1.5 + n_f0_4 * 0.4).sin();
