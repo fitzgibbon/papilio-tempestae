@@ -271,15 +271,42 @@ async fn run() {
         label: Some("Bind Group"),
         layout: &bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: vertex_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: indirect_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: pass_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 4, resource: base_faces_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 5, resource: dummy_queue_a.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 6, resource: dummy_queue_b.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 7, resource: input_counter_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 8, resource: output_counter_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: vertex_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: indirect_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: pass_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: base_faces_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: dummy_queue_a.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: dummy_queue_b.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: input_counter_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: output_counter_buf.as_entire_binding(),
+            },
         ],
     });
 
@@ -298,7 +325,8 @@ async fn run() {
         cache: None,
     });
 
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     {
         let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Compute Pass"),
@@ -346,13 +374,14 @@ async fn run() {
         let pos_unit = pos_gpu.normalize();
         let total_disp;
 
-        let sample_noise_rust = |p: Vec3| -> f32 {
-            planet_shader::snoise3(p)
+        let sample_noise_rust = |p: Vec3| -> f32 { planet_shader::snoise3(p) };
+
+        let smoothstep = |edge0: f32, edge1: f32, x: f32| {
+            let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
         };
 
         let f0 = globals_data.noise_frequency;
-        
-        // Sample exactly 6 shared noise frequencies for a unified heightmap
         let n_f0 = sample_noise_rust(pos_unit * f0);
         let n_f0_2 = sample_noise_rust(pos_unit * (f0 * 2.0));
         let n_f0_4 = sample_noise_rust(pos_unit * (f0 * 4.0));
@@ -360,49 +389,54 @@ async fn run() {
         let n_f0_16 = sample_noise_rust(pos_unit * (f0 * 16.0));
         let n_f0_32 = sample_noise_rust(pos_unit * (f0 * 32.0));
 
-        // Combine 6 octaves into a single heightmap using heterogeneous multifractal (slope scaling)
+        let basin_seed = (-n_f0).max(0.0);
+        let basin_mask = smoothstep(0.05, 0.55, basin_seed);
+
         let mut h = n_f0;
-        
-        let w1 = 0.15 + 0.85 * (1.0 - n_f0.abs());
-        h += n_f0_2 * 0.5 * w1;
-        
-        let w2 = 0.15 + 0.85 * (1.0 - n_f0_2.abs());
-        h += n_f0_4 * 0.25 * w2;
-        
-        let w3 = 0.15 + 0.85 * (1.0 - n_f0_4.abs());
-        h += n_f0_8 * 0.125 * w3;
-        
-        let w4 = 0.15 + 0.85 * (1.0 - n_f0_8.abs());
-        h += n_f0_16 * 0.0625 * w4;
-        
-        let w5 = 0.15 + 0.85 * (1.0 - n_f0_16.abs());
-        h += n_f0_32 * 0.03125 * w5;
 
-        // Define sea level
-        let sea_level = 0.0;
+        let w1 = (0.2 + 0.8 * (1.0 - n_f0.abs())) * (1.0 - basin_mask)
+            + (0.55 + 0.45 * basin_seed) * basin_mask;
+        let g1 = 1.0 + basin_mask * (-n_f0_2).max(0.0) * 0.75;
+        h += n_f0_2 * 0.5 * w1 * g1;
 
-        // land_mask: smooth transition at shorelines
-        let land_mask = ((h - sea_level) * 10.0).clamp(0.0, 1.0);
+        let w2 = (0.2 + 0.8 * (1.0 - n_f0_2.abs())) * (1.0 - basin_mask)
+            + (0.6 + 0.4 * basin_seed) * basin_mask;
+        let g2 = 1.0 + basin_mask * (-n_f0_4).max(0.0) * 0.9;
+        h += n_f0_4 * 0.25 * w2 * g2;
 
-        // mountain_factor: high altitude areas smoothly become mountains
+        let w3 = (0.2 + 0.8 * (1.0 - n_f0_4.abs())) * (1.0 - basin_mask)
+            + (0.65 + 0.35 * basin_seed) * basin_mask;
+        let g3 = 1.0 + basin_mask * (-n_f0_8).max(0.0) * 1.1;
+        h += n_f0_8 * 0.125 * w3 * g3;
+
+        let w4 = (0.2 + 0.8 * (1.0 - n_f0_8.abs())) * (1.0 - basin_mask)
+            + (0.7 + 0.3 * basin_seed) * basin_mask;
+        let g4 = 1.0 + basin_mask * (-n_f0_16).max(0.0) * 1.25;
+        h += n_f0_16 * 0.0625 * w4 * g4;
+
+        let w5 = (0.2 + 0.8 * (1.0 - n_f0_16.abs())) * (1.0 - basin_mask)
+            + (0.75 + 0.25 * basin_seed) * basin_mask;
+        let g5 = 1.0 + basin_mask * (-n_f0_32).max(0.0) * 1.4;
+        h += n_f0_32 * 0.03125 * w5 * g5;
+
+        let land_mask = (h * 10.0).clamp(0.0, 1.0);
         let mountain_factor = ((h - 0.15) * 3.0).clamp(0.0, 1.0) * land_mask;
 
-        let mut elevation = if h < sea_level {
-            // Ocean floor: scaled basin
-            -5.0 + h * 2.5
-        } else {
-            // Land: plains vs mountains
-            let plains = h * 1.5 + 0.25;
-            let mountain = h * 1.5 + h.powi(2) * 15.0;
-            plains * (1.0 - mountain_factor * mountain_factor) + mountain * (mountain_factor * mountain_factor)
-        };
+        let h_land = h.max(0.0);
+        let ocean_depth = (-h).max(0.0);
+        let ocean_mask = smoothstep(0.02, 0.35, ocean_depth);
+        let trench_noise =
+            0.55 * (-n_f0_8).max(0.0) + 0.30 * (-n_f0_16).max(0.0) + 0.15 * (-n_f0_32).max(0.0);
+        let trench_mask = ocean_mask * smoothstep(0.18, 0.55, trench_noise);
 
-        // 6. Terracing in mountains
+        let mut elevation = h * 1.5 + h_land * h_land * mountain_factor * 12.0;
+        elevation -= ocean_depth * ocean_depth * (2.4 + 2.0 * basin_mask);
+        elevation -= trench_mask * (1.2 + ocean_depth * 2.0);
+
         let terrace_pattern = (elevation * 1.5 + n_f0_4 * 0.4).sin();
         let terrace_amp = 0.5 * mountain_factor;
         elevation += terrace_pattern * terrace_amp;
 
-        // Scale by globals.noise_amplitude
         total_disp = elevation * (globals_data.noise_amplitude * 0.025);
 
         let expected_height = globals_data.planet_radius + total_disp;
@@ -418,14 +452,20 @@ async fn run() {
         if i < 10 {
             println!(
                 "Point {:2}: GPU Height={:.6} | CPU Height={:.6} | Diff={:.8}",
-                i, pos_gpu.length(), expected_height, diff
+                i,
+                pos_gpu.length(),
+                expected_height,
+                diff
             );
         }
     }
 
     println!("==================================================");
     println!("Tested {} random points.", count);
-    println!("Mean Deviation (GPU vs CPU expected): {:.8}", total_diff / (count as f32));
+    println!(
+        "Mean Deviation (GPU vs CPU expected): {:.8}",
+        total_diff / (count as f32)
+    );
     println!("Max Deviation: {:.8}", max_diff);
     println!("==================================================\n");
 }

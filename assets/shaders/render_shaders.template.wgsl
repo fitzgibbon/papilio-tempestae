@@ -48,8 +48,7 @@ struct DisplacementData {
 
 fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let f0 = globals.noise_frequency;
-    
-    // Sample exactly 6 shared noise frequencies for a unified heightmap
+
     let n_f0 = sample_noise(pos_unit * f0);
     let n_f0_2 = sample_noise(pos_unit * (f0 * 2.0));
     let n_f0_4 = sample_noise(pos_unit * (f0 * 4.0));
@@ -57,48 +56,50 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let n_f0_16 = sample_noise(pos_unit * (f0 * 16.0));
     let n_f0_32 = sample_noise(pos_unit * (f0 * 32.0));
 
-    // Combine 6 octaves into a single heightmap using heterogeneous multifractal (slope scaling)
+    let basin_seed = max(-n_f0, 0.0);
+    let basin_mask = smoothstep(0.05, 0.55, basin_seed);
+
     var h = n_f0;
-    
-    let w1 = 0.15 + 0.85 * (1.0 - abs(n_f0));
-    h += n_f0_2 * 0.5 * w1;
-    
-    let w2 = 0.15 + 0.85 * (1.0 - abs(n_f0_2));
-    h += n_f0_4 * 0.25 * w2;
-    
-    let w3 = 0.15 + 0.85 * (1.0 - abs(n_f0_4));
-    h += n_f0_8 * 0.125 * w3;
-    
-    let w4 = 0.15 + 0.85 * (1.0 - abs(n_f0_8));
-    h += n_f0_16 * 0.0625 * w4;
-    
-    let w5 = 0.15 + 0.85 * (1.0 - abs(n_f0_16));
-    h += n_f0_32 * 0.03125 * w5;
 
-    // Define sea level
+    let w1 = mix(0.2 + 0.8 * (1.0 - abs(n_f0)), 0.55 + 0.45 * basin_seed, basin_mask);
+    let g1 = 1.0 + basin_mask * max(-n_f0_2, 0.0) * 0.75;
+    h += n_f0_2 * 0.5 * w1 * g1;
+
+    let w2 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_2)), 0.6 + 0.4 * basin_seed, basin_mask);
+    let g2 = 1.0 + basin_mask * max(-n_f0_4, 0.0) * 0.9;
+    h += n_f0_4 * 0.25 * w2 * g2;
+
+    let w3 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_4)), 0.65 + 0.35 * basin_seed, basin_mask);
+    let g3 = 1.0 + basin_mask * max(-n_f0_8, 0.0) * 1.1;
+    h += n_f0_8 * 0.125 * w3 * g3;
+
+    let w4 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_8)), 0.7 + 0.3 * basin_seed, basin_mask);
+    let g4 = 1.0 + basin_mask * max(-n_f0_16, 0.0) * 1.25;
+    h += n_f0_16 * 0.0625 * w4 * g4;
+
+    let w5 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_16)), 0.75 + 0.25 * basin_seed, basin_mask);
+    let g5 = 1.0 + basin_mask * max(-n_f0_32, 0.0) * 1.4;
+    h += n_f0_32 * 0.03125 * w5 * g5;
+
     let sea_level = 0.0;
-
-    // land_mask: smooth transition at shorelines
     let land_mask = clamp((h - sea_level) * 10.0, 0.0, 1.0);
-
-    // mountain_factor: high altitude areas smoothly become mountains
     let mountain_factor = clamp((h - 0.15) * 3.0, 0.0, 1.0) * land_mask;
 
-    // Continuous elevation: h maps smoothly through sea level
-    // Base term is linear (continuous at h=0), mountain amplification uses max(h,0)^2
-    // which has both value=0 and derivative=0 at h=0, guaranteeing C1 continuity
     let h_land = max(h, 0.0);
-    var elevation = h * 1.5 + h_land * h_land * mountain_factor * 12.0;
+    let ocean_depth = max(-h, 0.0);
+    let ocean_mask = smoothstep(0.02, 0.35, ocean_depth);
+    let trench_noise = 0.55 * max(-n_f0_8, 0.0) + 0.30 * max(-n_f0_16, 0.0) + 0.15 * max(-n_f0_32, 0.0);
+    let trench_mask = ocean_mask * smoothstep(0.18, 0.55, trench_noise);
 
-    // 6. Terracing in mountains
+    var elevation = h * 1.5 + h_land * h_land * mountain_factor * 12.0;
+    elevation -= ocean_depth * ocean_depth * (2.4 + 2.0 * basin_mask);
+    elevation -= trench_mask * (1.2 + ocean_depth * 2.0);
+
     let terrace_pattern = sin(elevation * 1.5 + n_f0_4 * 0.4);
     let terrace_amp = 0.5 * mountain_factor;
     elevation += terrace_pattern * terrace_amp;
 
-    // Scale by globals.noise_amplitude
     let disp = elevation * (globals.noise_amplitude * 0.025);
-
-    // Climate perturbations (reuse existing noise samples to avoid extra calls)
     let temp_noise = n_f0_2;
     let humid_noise = n_f0;
 

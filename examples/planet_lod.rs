@@ -1,17 +1,17 @@
 // Bevy example: Procedural 3D Isosphere planet with GPU-driven dynamic LOD and frustum culling.
 
 use bevy::{
-    prelude::*,
+    core_pipeline::core_3d::graph::Node3d,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     input::mouse::{MouseMotion, MouseWheel},
+    prelude::*,
     render::{
-        view::ExtractedView,
+        Extract, ExtractSchedule, Render, RenderApp, RenderStartup,
         render_graph::{self, RenderGraph, RenderLabel},
         render_resource::*,
         renderer::{RenderContext, RenderDevice, RenderQueue},
-        Render, RenderApp, RenderStartup, Extract, ExtractSchedule,
+        view::ExtractedView,
     },
-    core_pipeline::core_3d::graph::Node3d,
-    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
 };
 use bytemuck::{Pod, Zeroable};
 
@@ -87,10 +87,7 @@ impl Default for PlanetCameraState {
     }
 }
 
-fn extract_camera_state(
-    mut commands: Commands,
-    camera_state: Extract<Res<PlanetCameraState>>,
-) {
+fn extract_camera_state(mut commands: Commands, camera_state: Extract<Res<PlanetCameraState>>) {
     commands.insert_resource(camera_state.clone());
 }
 
@@ -99,8 +96,8 @@ struct PlanetRenderPlugin;
 impl Plugin for PlanetRenderPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(PlanetCameraState::default())
-        .add_systems(Startup, setup_scene)
-        .add_systems(Update, (update_camera_and_state, update_ui));
+            .add_systems(Startup, setup_scene)
+            .add_systems(Update, (update_camera_and_state, update_ui));
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -122,16 +119,12 @@ impl Plugin for PlanetRenderPlugin {
 
         // Register the render node inside the Core3d sub-graph
         let mut render_graph = render_app.world_mut().resource_mut::<RenderGraph>();
-        if let Some(core_3d_graph) = render_graph.get_sub_graph_mut(bevy::core_pipeline::core_3d::graph::Core3d) {
+        if let Some(core_3d_graph) =
+            render_graph.get_sub_graph_mut(bevy::core_pipeline::core_3d::graph::Core3d)
+        {
             core_3d_graph.add_node(PlanetRenderLabel, PlanetRenderNode);
-            core_3d_graph.add_node_edge(
-                Node3d::EndMainPass,
-                PlanetRenderLabel,
-            );
-            core_3d_graph.add_node_edge(
-                PlanetRenderLabel,
-                Node3d::StartMainPassPostProcessing,
-            );
+            core_3d_graph.add_node_edge(Node3d::EndMainPass, PlanetRenderLabel);
+            core_3d_graph.add_node_edge(PlanetRenderLabel, Node3d::StartMainPassPostProcessing);
         }
     }
 }
@@ -139,7 +132,10 @@ impl Plugin for PlanetRenderPlugin {
 #[derive(Component)]
 struct AltitudeText;
 
-fn setup_scene(mut commands: Commands, mut cursor_options: Query<&mut bevy::window::CursorOptions>) {
+fn setup_scene(
+    mut commands: Commands,
+    mut cursor_options: Query<&mut bevy::window::CursorOptions>,
+) {
     // Grab and lock the cursor at startup so mouselook is active immediately
     if let Ok(mut cursor) = cursor_options.single_mut() {
         cursor.visible = false;
@@ -200,7 +196,11 @@ fn update_ui(
         .and_then(|fps| fps.smoothed())
         .unwrap_or(0.0);
 
-    let wireframe_status = if camera_state.show_wireframe { "ON" } else { "OFF" };
+    let wireframe_status = if camera_state.show_wireframe {
+        "ON"
+    } else {
+        "OFF"
+    };
 
     for mut text in text_query.iter_mut() {
         text.0 = format!(
@@ -233,10 +233,12 @@ fn update_camera_and_state(
         let sample_noise_rust = |p: Vec3| -> f32 {
             planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z))
         };
+        let smoothstep = |edge0: f32, edge1: f32, x: f32| {
+            let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
 
         let f0 = NOISE_FREQUENCY;
-        
-        // Sample exactly 6 shared noise frequencies for a unified heightmap
         let n_f0 = sample_noise_rust(pos_unit * f0);
         let n_f0_2 = sample_noise_rust(pos_unit * (f0 * 2.0));
         let n_f0_4 = sample_noise_rust(pos_unit * (f0 * 4.0));
@@ -244,43 +246,54 @@ fn update_camera_and_state(
         let n_f0_16 = sample_noise_rust(pos_unit * (f0 * 16.0));
         let n_f0_32 = sample_noise_rust(pos_unit * (f0 * 32.0));
 
-        // Combine 6 octaves into a single heightmap using heterogeneous multifractal (slope scaling)
+        let basin_seed = (-n_f0).max(0.0);
+        let basin_mask = smoothstep(0.05, 0.55, basin_seed);
+
         let mut h = n_f0;
-        
-        let w1 = 0.15 + 0.85 * (1.0 - n_f0.abs());
-        h += n_f0_2 * 0.5 * w1;
-        
-        let w2 = 0.15 + 0.85 * (1.0 - n_f0_2.abs());
-        h += n_f0_4 * 0.25 * w2;
-        
-        let w3 = 0.15 + 0.85 * (1.0 - n_f0_4.abs());
-        h += n_f0_8 * 0.125 * w3;
-        
-        let w4 = 0.15 + 0.85 * (1.0 - n_f0_8.abs());
-        h += n_f0_16 * 0.0625 * w4;
-        
-        let w5 = 0.15 + 0.85 * (1.0 - n_f0_16.abs());
-        h += n_f0_32 * 0.03125 * w5;
 
-        // Define sea level
-        let sea_level = 0.0;
+        let w1 = (0.2 + 0.8 * (1.0 - n_f0.abs())) * (1.0 - basin_mask)
+            + (0.55 + 0.45 * basin_seed) * basin_mask;
+        let g1 = 1.0 + basin_mask * (-n_f0_2).max(0.0) * 0.75;
+        h += n_f0_2 * 0.5 * w1 * g1;
 
-        // land_mask: smooth transition at shorelines
-        let land_mask = ((h - sea_level) * 10.0).clamp(0.0, 1.0);
+        let w2 = (0.2 + 0.8 * (1.0 - n_f0_2.abs())) * (1.0 - basin_mask)
+            + (0.6 + 0.4 * basin_seed) * basin_mask;
+        let g2 = 1.0 + basin_mask * (-n_f0_4).max(0.0) * 0.9;
+        h += n_f0_4 * 0.25 * w2 * g2;
 
-        // mountain_factor: high altitude areas smoothly become mountains
+        let w3 = (0.2 + 0.8 * (1.0 - n_f0_4.abs())) * (1.0 - basin_mask)
+            + (0.65 + 0.35 * basin_seed) * basin_mask;
+        let g3 = 1.0 + basin_mask * (-n_f0_8).max(0.0) * 1.1;
+        h += n_f0_8 * 0.125 * w3 * g3;
+
+        let w4 = (0.2 + 0.8 * (1.0 - n_f0_8.abs())) * (1.0 - basin_mask)
+            + (0.7 + 0.3 * basin_seed) * basin_mask;
+        let g4 = 1.0 + basin_mask * (-n_f0_16).max(0.0) * 1.25;
+        h += n_f0_16 * 0.0625 * w4 * g4;
+
+        let w5 = (0.2 + 0.8 * (1.0 - n_f0_16.abs())) * (1.0 - basin_mask)
+            + (0.75 + 0.25 * basin_seed) * basin_mask;
+        let g5 = 1.0 + basin_mask * (-n_f0_32).max(0.0) * 1.4;
+        h += n_f0_32 * 0.03125 * w5 * g5;
+
+        let land_mask = (h * 10.0).clamp(0.0, 1.0);
         let mountain_factor = ((h - 0.15) * 3.0).clamp(0.0, 1.0) * land_mask;
 
-        // Continuous elevation: h maps smoothly through sea level
         let h_land = h.max(0.0);
-        let mut elevation = h * 1.5 + h_land * h_land * mountain_factor * 12.0;
+        let ocean_depth = (-h).max(0.0);
+        let ocean_mask = smoothstep(0.02, 0.35, ocean_depth);
+        let trench_noise =
+            0.55 * (-n_f0_8).max(0.0) + 0.30 * (-n_f0_16).max(0.0) + 0.15 * (-n_f0_32).max(0.0);
+        let trench_mask = ocean_mask * smoothstep(0.18, 0.55, trench_noise);
 
-        // 6. Terracing in mountains
+        let mut elevation = h * 1.5 + h_land * h_land * mountain_factor * 12.0;
+        elevation -= ocean_depth * ocean_depth * (2.4 + 2.0 * basin_mask);
+        elevation -= trench_mask * (1.2 + ocean_depth * 2.0);
+
         let terrace_pattern = (elevation * 1.5 + n_f0_4 * 0.4).sin();
         let terrace_amp = 0.5 * mountain_factor;
         elevation += terrace_pattern * terrace_amp;
 
-        // Scale by globals.noise_amplitude
         let total_disp = elevation * (NOISE_AMPLITUDE * 0.025);
 
         PLANET_RADIUS + total_disp
@@ -323,8 +336,12 @@ fn update_camera_and_state(
         // Mouse horizontal movement directly rotates player heading (local_forward) on the sphere surface
         if mouse_dx != 0.0 {
             let d_yaw = mouse_dx * sensitivity;
-            let local_right = camera_state.local_forward.cross(camera_state.pos_unit).normalize();
-            camera_state.local_forward = (camera_state.local_forward * d_yaw.cos() + local_right * d_yaw.sin()).normalize();
+            let local_right = camera_state
+                .local_forward
+                .cross(camera_state.pos_unit)
+                .normalize();
+            camera_state.local_forward =
+                (camera_state.local_forward * d_yaw.cos() + local_right * d_yaw.sin()).normalize();
         }
 
         // Mouse vertical movement changes look pitch relative to the horizon (reversed so pushing mouse up pitches down)
@@ -369,8 +386,12 @@ fn update_camera_and_state(
     // Apply W/S movement along player body forward vector (geodesic rotation)
     if move_forward != 0.0 {
         let d_theta = move_forward * walk_speed;
-        let new_pos = (camera_state.pos_unit * d_theta.cos() + camera_state.local_forward * d_theta.sin()).normalize();
-        let new_forward = (camera_state.local_forward * d_theta.cos() - camera_state.pos_unit * d_theta.sin()).normalize();
+        let new_pos = (camera_state.pos_unit * d_theta.cos()
+            + camera_state.local_forward * d_theta.sin())
+        .normalize();
+        let new_forward = (camera_state.local_forward * d_theta.cos()
+            - camera_state.pos_unit * d_theta.sin())
+        .normalize();
         camera_state.pos_unit = new_pos;
         camera_state.local_forward = new_forward;
     }
@@ -378,30 +399,36 @@ fn update_camera_and_state(
     // Apply A/D movement along player body right vector (geodesic rotation)
     if move_right != 0.0 {
         let d_theta = move_right * walk_speed;
-        let local_right = camera_state.local_forward.cross(camera_state.pos_unit).normalize();
-        let new_pos = (camera_state.pos_unit * d_theta.cos() + local_right * d_theta.sin()).normalize();
+        let local_right = camera_state
+            .local_forward
+            .cross(camera_state.pos_unit)
+            .normalize();
+        let new_pos =
+            (camera_state.pos_unit * d_theta.cos() + local_right * d_theta.sin()).normalize();
         camera_state.pos_unit = new_pos;
     }
 
     // Sanitize frame vectors to guarantee orthogonality and prevent float drift
-    camera_state.local_forward = (camera_state.local_forward - camera_state.pos_unit * camera_state.local_forward.dot(camera_state.pos_unit)).normalize();
+    camera_state.local_forward = (camera_state.local_forward
+        - camera_state.pos_unit * camera_state.local_forward.dot(camera_state.pos_unit))
+    .normalize();
 
-    // Determine final camera distance: terrain heightmap + elevation + player eye height offset (EYE_HEIGHT)
-    let terrain_height = get_height_at(camera_state.pos_unit);
+    // Determine final camera distance: clamp terrain to sea level, then add elevation and eye height
+    let terrain_height = get_height_at(camera_state.pos_unit).max(PLANET_RADIUS);
     let actual_distance = terrain_height + camera_state.elevation + EYE_HEIGHT;
 
     let camera_pos = camera_state.pos_unit * actual_distance;
 
     // Construct right-handed orthonormal camera orientation frame (Right, Up, -Forward)
     // to avoid looking_to's colinear up/look singularity when looking straight down/up.
-    let camera_up = camera_state.pos_unit * camera_state.look_pitch.cos() - camera_state.local_forward * camera_state.look_pitch.sin();
-    let camera_forward = (camera_state.local_forward * camera_state.look_pitch.cos() + camera_state.pos_unit * camera_state.look_pitch.sin()).normalize();
+    let camera_up = camera_state.pos_unit * camera_state.look_pitch.cos()
+        - camera_state.local_forward * camera_state.look_pitch.sin();
+    let camera_forward = (camera_state.local_forward * camera_state.look_pitch.cos()
+        + camera_state.pos_unit * camera_state.look_pitch.sin())
+    .normalize();
     let camera_right = camera_forward.cross(camera_up).normalize();
-    let camera_rotation = Quat::from_mat3(&Mat3::from_cols(
-        camera_right,
-        camera_up,
-        -camera_forward,
-    ));
+    let camera_rotation =
+        Quat::from_mat3(&Mat3::from_cols(camera_right, camera_up, -camera_forward));
 
     let Ok(mut transform) = camera_query.single_mut() else {
         return;
@@ -515,15 +542,40 @@ fn init_gpu_resources(
     let x = 0.5257311121191336_f32;
     let z = 0.8506508083520399_f32;
     let base_vertices = [
-        Vec3::new(-x, z, 0.0), Vec3::new(x, z, 0.0), Vec3::new(-x, -z, 0.0), Vec3::new(x, -z, 0.0),
-        Vec3::new(0.0, -x, z), Vec3::new(0.0, x, z), Vec3::new(0.0, -x, -z), Vec3::new(0.0, x, -z),
-        Vec3::new(z, 0.0, -x), Vec3::new(z, 0.0, x), Vec3::new(-z, 0.0, -x), Vec3::new(-z, 0.0, x)
+        Vec3::new(-x, z, 0.0),
+        Vec3::new(x, z, 0.0),
+        Vec3::new(-x, -z, 0.0),
+        Vec3::new(x, -z, 0.0),
+        Vec3::new(0.0, -x, z),
+        Vec3::new(0.0, x, z),
+        Vec3::new(0.0, -x, -z),
+        Vec3::new(0.0, x, -z),
+        Vec3::new(z, 0.0, -x),
+        Vec3::new(z, 0.0, x),
+        Vec3::new(-z, 0.0, -x),
+        Vec3::new(-z, 0.0, x),
     ];
     let base_faces = [
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ];
 
     let mut base_triangles = Vec::new();
@@ -806,7 +858,7 @@ fn init_gpu_resources(
             },
             BindGroupLayoutEntry {
                 binding: 1,
-                visibility: ShaderStages::VERTEX,
+                visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                 ty: BindingType::Buffer {
                     ty: BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -916,7 +968,9 @@ fn prepare_uniforms(
     let clip_from_view = extracted_view.clip_from_view;
     let world_from_view = extracted_view.world_from_view.to_matrix();
     let view_from_world = world_from_view.inverse();
-    let view_proj = extracted_view.clip_from_world.unwrap_or(clip_from_view * view_from_world);
+    let view_proj = extracted_view
+        .clip_from_world
+        .unwrap_or(clip_from_view * view_from_world);
     let frustum_planes = extract_frustum_planes(view_proj);
 
     // Update global settings for compute shader
@@ -956,7 +1010,11 @@ fn prepare_uniforms(
         first_vertex: 0,
         first_instance: 0,
     };
-    render_queue.write_buffer(&gpu_resources.indirect_buffer, 0, bytemuck::bytes_of(&zero_args));
+    render_queue.write_buffer(
+        &gpu_resources.indirect_buffer,
+        0,
+        bytemuck::bytes_of(&zero_args),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -965,7 +1023,6 @@ fn prepare_uniforms(
 
 #[derive(RenderLabel, Debug, Hash, PartialEq, Eq, Clone)]
 struct PlanetRenderLabel;
-
 
 struct PlanetRenderNode;
 
@@ -983,13 +1040,17 @@ impl render_graph::Node for PlanetRenderNode {
         let render_view = world.resource::<RenderViewUniform>();
 
         // Ensure shaders are compiled
-        let Some(compute_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.compute_pipeline_id) else {
+        let Some(compute_pipeline) =
+            pipeline_cache.get_compute_pipeline(pipeline.compute_pipeline_id)
+        else {
             return Ok(());
         };
-        let Some(render_pipeline) = pipeline_cache.get_render_pipeline(pipeline.render_pipeline_id) else {
+        let Some(render_pipeline) = pipeline_cache.get_render_pipeline(pipeline.render_pipeline_id)
+        else {
             return Ok(());
         };
-        let Some(water_pipeline) = pipeline_cache.get_render_pipeline(pipeline.water_pipeline_id) else {
+        let Some(water_pipeline) = pipeline_cache.get_render_pipeline(pipeline.water_pipeline_id)
+        else {
             return Ok(());
         };
 
@@ -1022,7 +1083,8 @@ impl render_graph::Node for PlanetRenderNode {
         let Some(view_target) = world.get::<bevy::render::view::ViewTarget>(view_entity) else {
             return Ok(());
         };
-        let Some(view_depth) = world.get::<bevy::render::view::ViewDepthTexture>(view_entity) else {
+        let Some(view_depth) = world.get::<bevy::render::view::ViewDepthTexture>(view_entity)
+        else {
             return Ok(());
         };
 
@@ -1045,7 +1107,9 @@ impl render_graph::Node for PlanetRenderNode {
             };
 
             // Clear output counter to 0 on GPU
-            render_context.command_encoder().clear_buffer(output_counter, 0, None);
+            render_context
+                .command_encoder()
+                .clear_buffer(output_counter, 0, None);
 
             // Create dynamic bind group for pass k
             let compute_bind_group = render_context.render_device().create_bind_group(
@@ -1070,10 +1134,13 @@ impl render_graph::Node for PlanetRenderNode {
             let workgroups_x = workgroup_count.min(65535);
             let workgroups_y = workgroup_count.div_ceil(65535);
 
-            let mut compute_pass = render_context.command_encoder().begin_compute_pass(&ComputePassDescriptor {
-                label: Some(&format!("Planet Compute Pass Depth {}", k)),
-                timestamp_writes: None,
-            });
+            let mut compute_pass =
+                render_context
+                    .command_encoder()
+                    .begin_compute_pass(&ComputePassDescriptor {
+                        label: Some(&format!("Planet Compute Pass Depth {}", k)),
+                        timestamp_writes: None,
+                    });
             compute_pass.set_pipeline(compute_pipeline);
             compute_pass.set_bind_group(0, &compute_bind_group, &[]);
             compute_pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
@@ -1081,28 +1148,31 @@ impl render_graph::Node for PlanetRenderNode {
 
         // 2. Render terrain (opaque, indirect draw)
         {
-            let mut render_pass = render_context.command_encoder().begin_render_pass(&RenderPassDescriptor {
-                label: Some("Planet Render Pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: view_target.main_texture_view(),
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                    view: view_depth.view(),
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            let mut render_pass =
+                render_context
+                    .command_encoder()
+                    .begin_render_pass(&RenderPassDescriptor {
+                        label: Some("Planet Render Pass"),
+                        color_attachments: &[Some(RenderPassColorAttachment {
+                            view: view_target.main_texture_view(),
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Load,
+                                store: StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                            view: view_depth.view(),
+                            depth_ops: Some(Operations {
+                                load: LoadOp::Load,
+                                store: StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
             render_pass.set_pipeline(render_pipeline);
             render_pass.set_bind_group(0, &render_bind_group, &[]);
             render_pass.draw_indirect(&resources.indirect_buffer, 0);
@@ -1110,28 +1180,31 @@ impl render_graph::Node for PlanetRenderNode {
 
         // 3. Render translucent water sphere on top
         {
-            let mut water_pass = render_context.command_encoder().begin_render_pass(&RenderPassDescriptor {
-                label: Some("Water Render Pass"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: view_target.main_texture_view(),
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                    view: view_depth.view(),
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Load,
-                        store: StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            let mut water_pass =
+                render_context
+                    .command_encoder()
+                    .begin_render_pass(&RenderPassDescriptor {
+                        label: Some("Water Render Pass"),
+                        color_attachments: &[Some(RenderPassColorAttachment {
+                            view: view_target.main_texture_view(),
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Load,
+                                store: StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                            view: view_depth.view(),
+                            depth_ops: Some(Operations {
+                                load: LoadOp::Load,
+                                store: StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
             water_pass.set_pipeline(water_pipeline);
             water_pass.set_bind_group(0, &water_bind_group, &[]);
             water_pass.draw(0..WATER_VERTEX_COUNT, 0..1);
