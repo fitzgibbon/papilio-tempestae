@@ -392,33 +392,31 @@ struct DisplacementData {
 fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let f0 = globals.noise_frequency;
     
-    // Sample shared noise frequencies to stay within the 33-call budget
+    // Sample shared noise frequencies to stay within the 33-call budget (9 unique calls)
     let n_f0_3 = sample_noise(pos_unit * (f0 * 0.3));
     let n_f0_6 = sample_noise(pos_unit * (f0 * 0.6));
     let n_f0_12 = sample_noise(pos_unit * (f0 * 1.2));
     let n_f0 = sample_noise(pos_unit * f0);
-    let n_f0_15 = sample_noise(pos_unit * (f0 * 1.5));
     let n_f0_2 = sample_noise(pos_unit * (f0 * 2.0));
-    let n_f0_3_0 = sample_noise(pos_unit * (f0 * 3.0));
     let n_f0_4 = sample_noise(pos_unit * (f0 * 4.0));
-    let n_f0_6_0 = sample_noise(pos_unit * (f0 * 6.0));
-    let n_f0_8_0 = sample_noise(pos_unit * (f0 * 8.0));
-    let n_f0_16_0 = sample_noise(pos_unit * (f0 * 16.0));
+    let n_f0_8 = sample_noise(pos_unit * (f0 * 8.0));
+    let n_f0_16 = sample_noise(pos_unit * (f0 * 16.0));
+    let n_f0_32 = sample_noise(pos_unit * (f0 * 32.0));
 
     // 1. Continent / Ocean mask (large scale) - 3 Octaves for organic coastlines
     let continent_noise = n_f0_3 + n_f0_6 * 0.4 + n_f0_12 * 0.15;
     let land_mask = clamp(continent_noise * 2.0 + 0.3, 0.0, 1.0);
 
     // 2. Mountain selector (where mountain ranges form) - 2 Octaves for winding chains
-    let mountain_selector = n_f0_6 + n_f0_15 * 0.3;
+    let mountain_selector = n_f0_6 + n_f0_12 * 0.3;
     let mountain_factor = clamp(mountain_selector * 1.8 - 0.2, 0.0, 1.0) * land_mask;
 
-    // 3. Plains elevation (bumpy hills / plains) - 4 Octaves (boosted detail)
-    let plains = n_f0 * 0.25 + 0.25 + n_f0_3_0 * 0.12 + n_f0_6_0 * 0.06 + n_f0_16_0 * 0.02;
+    // 3. Plains elevation (bumpy hills / plains) - 6 Octaves (ultra-bumpiness)
+    let plains = n_f0 * 0.25 + 0.25 + n_f0_2 * 0.12 + n_f0_4 * 0.06 + n_f0_8 * 0.03 + n_f0_16 * 0.015 + n_f0_32 * 0.008;
 
-    // 4. Mountain elevation (rugged peaks) - 5 Octaves (boosted detail)
+    // 4. Mountain elevation (rugged peaks) - 6 Octaves (rugged detail)
     let n0_mount = 1.0 - abs(n_f0);
-    let mountain = 1.0 + (n0_mount * 1.3 - 0.3 + n_f0_2 * 0.35 + n_f0_4 * 0.2 + n_f0_8_0 * 0.08 + n_f0_16_0 * 0.03) * 8.0;
+    let mountain = 1.0 + (n0_mount * 1.3 - 0.3 + n_f0_2 * 0.35 + n_f0_4 * 0.2 + n_f0_8 * 0.08 + n_f0_16 * 0.04 + n_f0_32 * 0.02) * 8.0;
 
     // 5. Ocean elevation (deep basins)
     let ocean_floor = -5.0 + n_f0 * 1.0;
@@ -436,7 +434,7 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
 
     // Scale by globals.noise_amplitude
     let disp = elevation * (globals.noise_amplitude * 0.025);
-    return DisplacementData(disp, mountain_factor, land_mask, n_f0_15, n_f0);
+    return DisplacementData(disp, mountain_factor, land_mask, n_f0_12, n_f0);
 }
 
 // Displace a normalized sphere coordinate using 4 octaves of 3D Simplex noise
