@@ -78,7 +78,7 @@ impl Default for PlanetCameraState {
             look_pitch: -std::f32::consts::FRAC_PI_2,
             elevation: 500.0,
             max_distance: 650.0,
-            show_wireframe: true,
+            show_wireframe: false,
         }
     }
 }
@@ -225,90 +225,57 @@ fn update_camera_and_state(
 
     let get_height_at = |dir: Vec3| -> f32 {
         let pos_unit = dir.normalize();
-        let eps = 0.01f32;
-        let mut total_disp = 0.0f32;
-        let mut accum_grad = Vec3::ZERO;
 
         let sample_noise_rust = |p: Vec3| -> f32 {
             planet_shader::snoise3(planet_shader::glam::Vec3::new(p.x, p.y, p.z))
         };
 
-        let f_mask = NOISE_FREQUENCY * 0.4;
-        let n_mask = sample_noise_rust(pos_unit * f_mask);
-        let mountain_density = ((n_mask * 1.8) + 0.3).clamp(0.0, 1.0);
-        let mountain_factor = mountain_density * mountain_density;
-
-        // Octave 0
         let f0 = NOISE_FREQUENCY;
-        let a0 = NOISE_AMPLITUDE * 0.5;
+        
+        // Sample shared noise frequencies
+        let n_f0_3 = sample_noise_rust(pos_unit * (f0 * 0.3));
+        let n_f0_6 = sample_noise_rust(pos_unit * (f0 * 0.6));
+        let n_f0_12 = sample_noise_rust(pos_unit * (f0 * 1.2));
+        let n_f0 = sample_noise_rust(pos_unit * f0);
+        let n_f0_15 = sample_noise_rust(pos_unit * (f0 * 1.5));
+        let n_f0_2 = sample_noise_rust(pos_unit * (f0 * 2.0));
+        let n_f0_3_0 = sample_noise_rust(pos_unit * (f0 * 3.0));
+        let n_f0_4 = sample_noise_rust(pos_unit * (f0 * 4.0));
+        let n_f0_6_0 = sample_noise_rust(pos_unit * (f0 * 6.0));
+        let n_f0_8_0 = sample_noise_rust(pos_unit * (f0 * 8.0));
+        let n_f0_16_0 = sample_noise_rust(pos_unit * (f0 * 16.0));
 
-        let p0_plains = pos_unit * f0;
-        let n0_plains = sample_noise_rust(p0_plains) * 0.25;
+        // 1. Continent / Ocean mask (large scale) - 3 Octaves for organic coastlines
+        let continent_noise = n_f0_3 + n_f0_6 * 0.4 + n_f0_12 * 0.15;
+        let land_mask = (continent_noise * 2.0 + 0.3).clamp(0.0, 1.0);
 
-        let p0_mount = pos_unit * (f0 * 0.8);
-        let n0_mount = 1.0 - sample_noise_rust(p0_mount).abs();
+        // 2. Mountain selector (where mountain ranges form) - 2 Octaves for winding chains
+        let mountain_selector = n_f0_6 + n_f0_15 * 0.3;
+        let mountain_factor = (mountain_selector * 1.8 - 0.2).clamp(0.0, 1.0) * land_mask;
 
-        let n0 = n0_plains * (1.0 - mountain_factor) + (n0_mount * 1.1 - 0.3) * mountain_factor;
+        // 3. Plains elevation (bumpy hills / plains) - 4 Octaves (boosted detail)
+        let plains = n_f0 * 0.25 + 0.25 + n_f0_3_0 * 0.12 + n_f0_6_0 * 0.06 + n_f0_16_0 * 0.02;
 
-        let sample_blended_octave0 = |pos: Vec3| -> f32 {
-            let mask = ((sample_noise_rust(pos * f_mask) * 1.8) + 0.3).clamp(0.0, 1.0);
-            let m_factor = mask * mask;
-            let plains = sample_noise_rust(pos * f0) * 0.25;
-            let mount = 1.0 - sample_noise_rust(pos * (f0 * 0.8)).abs();
-            plains * (1.0 - m_factor) + (mount * 1.1 - 0.3) * m_factor
-        };
+        // 4. Mountain elevation (rugged peaks) - 5 Octaves (boosted detail)
+        let n0_mount = 1.0 - n_f0.abs();
+        let mountain = 1.0 + (n0_mount * 1.3 - 0.3 + n_f0_2 * 0.35 + n_f0_4 * 0.2 + n_f0_8_0 * 0.08 + n_f0_16_0 * 0.03) * 8.0;
 
-        let dx0 = sample_blended_octave0(pos_unit + Vec3::new(eps, 0.0, 0.0)) - n0;
-        let dy0 = sample_blended_octave0(pos_unit + Vec3::new(0.0, eps, 0.0)) - n0;
-        let dz0 = sample_blended_octave0(pos_unit + Vec3::new(0.0, 0.0, eps)) - n0;
-        let g0 = Vec3::new(dx0, dy0, dz0) / eps;
+        // 5. Ocean elevation (deep basins)
+        let ocean_floor = -5.0 + n_f0 * 1.0;
 
-        total_disp += n0 * a0;
-        accum_grad += g0 * a0;
+        // Mix land elevation (plains vs mountains)
+        let land_elevation = plains * (1.0 - mountain_factor * mountain_factor) + mountain * (mountain_factor * mountain_factor);
 
-        // Octave 1
-        let f1 = f0 * 2.0;
-        let a1 = a0 * 0.35;
-        let w1 = 0.1 + 1.9 * (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
-        let p1 = pos_unit * f1;
-        let n1 = sample_noise_rust(p1);
-        let dx1 = sample_noise_rust(p1 + Vec3::new(eps, 0.0, 0.0)) - n1;
-        let dy1 = sample_noise_rust(p1 + Vec3::new(0.0, eps, 0.0)) - n1;
-        let dz1 = sample_noise_rust(p1 + Vec3::new(0.0, 0.0, eps)) - n1;
-        let g1 = Vec3::new(dx1, dy1, dz1) / eps;
-        total_disp += n1 * a1 * w1;
-        accum_grad += g1 * a1 * w1;
+        // Mix ocean and land
+        let mut elevation = ocean_floor * (1.0 - land_mask) + land_elevation * land_mask;
 
-        // Octave 2
-        let f2 = f1 * 2.0;
-        let a2 = a1 * 0.35;
-        let w2 = 0.1 + 1.9 * (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
-        let p2 = pos_unit * f2;
-        let n2 = sample_noise_rust(p2);
-        let dx2 = sample_noise_rust(p2 + Vec3::new(eps, 0.0, 0.0)) - n2;
-        let dy2 = sample_noise_rust(p2 + Vec3::new(0.0, eps, 0.0)) - n2;
-        let dz2 = sample_noise_rust(p2 + Vec3::new(0.0, 0.0, eps)) - n2;
-        let g2 = Vec3::new(dx2, dy2, dz2) / eps;
-        total_disp += n2 * a2 * w2;
-        accum_grad += g2 * a2 * w2;
+        // 6. Terracing in mountains
+        let terrace_pattern = (elevation * 1.5 + n_f0_4 * 0.4).sin();
+        let terrace_amp = 0.5 * mountain_factor;
+        elevation += terrace_pattern * terrace_amp;
 
-        // Octave 3
-        let f3 = f2 * 2.0;
-        let a3 = a2 * 0.35;
-        let w3 = 0.1 + 1.9 * (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
-        let p3 = pos_unit * f3;
-        let n3 = sample_noise_rust(p3);
-        total_disp += n3 * a3 * w3;
-
-        // Add Sedimentary Terracing Effect on slopes
-        let slope = (accum_grad.length() / (a0 * f0)).clamp(0.0, 1.0);
-        let terrace_noise = sample_noise_rust(pos_unit * (f0 * 4.0));
-        let terrace_pattern = (total_disp * 1.5 + terrace_noise * 0.4).sin();
-        let terrace_amp = 0.8 * slope * mountain_density;
-        total_disp += terrace_pattern * terrace_amp;
-
-        // Clamp displacement to flat ocean floor
-        total_disp = total_disp.max(-2.5);
+        // Scale by globals.noise_amplitude
+        let total_disp = (elevation * (NOISE_AMPLITUDE * 0.025)).max(0.0);
 
         PLANET_RADIUS + total_disp
     };

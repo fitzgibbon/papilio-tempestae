@@ -366,101 +366,79 @@ fn sample_noise(p: vec3<f32>) -> f32 {
     return snoise3_shared(Vec3Shared(p.x, p.y, p.z));
 }
 
-fn sample_blended_octave0(pos: vec3<f32>) -> f32 {
-    let f_mask = globals.noise_frequency * 0.4;
-    let f0 = globals.noise_frequency;
-    let mask = clamp(sample_noise(pos * f_mask) * 1.8 + 0.3, 0.0, 1.0);
-    let plains = sample_noise(pos * f0) * 0.25;
-    let mount = 1.0 - abs(sample_noise(pos * (f0 * 0.8)));
-    return mix(plains, mount * 1.1 - 0.3, mask * mask);
+struct DisplacementData {
+    displacement: f32,
+    mountain_factor: f32,
+    land_mask: f32,
+    temp_noise: f32,
+    humid_noise: f32,
 }
 
-fn get_displacement(pos_unit: vec3<f32>) -> f32 {
-    let eps = 0.01;
-    var total_disp = 0.0;
-    var accum_grad = vec3<f32>(0.0, 0.0, 0.0);
-
-    let f_mask = globals.noise_frequency * 0.4;
-    let n_mask = sample_noise(pos_unit * f_mask);
-    let mountain_density = clamp(n_mask * 1.8 + 0.3, 0.0, 1.0);
-    let mountain_factor = mountain_density * mountain_density;
-
-    // Octave 0
+fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let f0 = globals.noise_frequency;
-    let a0 = globals.noise_amplitude * 0.5; // Base octave has 50% amplitude
+    
+    // Sample shared noise frequencies to stay within the 33-call budget
+    let n_f0_3 = sample_noise(pos_unit * (f0 * 0.3));
+    let n_f0_6 = sample_noise(pos_unit * (f0 * 0.6));
+    let n_f0_12 = sample_noise(pos_unit * (f0 * 1.2));
+    let n_f0 = sample_noise(pos_unit * f0);
+    let n_f0_15 = sample_noise(pos_unit * (f0 * 1.5));
+    let n_f0_2 = sample_noise(pos_unit * (f0 * 2.0));
+    let n_f0_3_0 = sample_noise(pos_unit * (f0 * 3.0));
+    let n_f0_4 = sample_noise(pos_unit * (f0 * 4.0));
+    let n_f0_6_0 = sample_noise(pos_unit * (f0 * 6.0));
+    let n_f0_8_0 = sample_noise(pos_unit * (f0 * 8.0));
+    let n_f0_16_0 = sample_noise(pos_unit * (f0 * 16.0));
 
-    let p0_plains = pos_unit * f0;
-    let n0_plains = sample_noise(p0_plains) * 0.25;
+    // 1. Continent / Ocean mask (large scale) - 3 Octaves for organic coastlines
+    let continent_noise = n_f0_3 + n_f0_6 * 0.4 + n_f0_12 * 0.15;
+    let land_mask = clamp(continent_noise * 2.0 + 0.3, 0.0, 1.0);
 
-    let p0_mount = pos_unit * (f0 * 0.8);
-    let n0_mount = 1.0 - abs(sample_noise(p0_mount));
+    // 2. Mountain selector (where mountain ranges form) - 2 Octaves for winding chains
+    let mountain_selector = n_f0_6 + n_f0_15 * 0.3;
+    let mountain_factor = clamp(mountain_selector * 1.8 - 0.2, 0.0, 1.0) * land_mask;
 
-    let n0 = mix(n0_plains, n0_mount * 1.1 - 0.3, mountain_factor);
+    // 3. Plains elevation (bumpy hills / plains) - 4 Octaves (boosted detail)
+    let plains = n_f0 * 0.25 + 0.25 + n_f0_3_0 * 0.12 + n_f0_6_0 * 0.06 + n_f0_16_0 * 0.02;
 
-    let dx0 = sample_blended_octave0(pos_unit + vec3<f32>(eps, 0.0, 0.0)) - n0;
-    let dy0 = sample_blended_octave0(pos_unit + vec3<f32>(0.0, eps, 0.0)) - n0;
-    let dz0 = sample_blended_octave0(pos_unit + vec3<f32>(0.0, 0.0, eps)) - n0;
-    let g0 = vec3<f32>(dx0, dy0, dz0) / eps;
+    // 4. Mountain elevation (rugged peaks) - 5 Octaves (boosted detail)
+    let n0_mount = 1.0 - abs(n_f0);
+    let mountain = 1.0 + (n0_mount * 1.3 - 0.3 + n_f0_2 * 0.35 + n_f0_4 * 0.2 + n_f0_8_0 * 0.08 + n_f0_16_0 * 0.03) * 8.0;
 
-    total_disp += n0 * a0;
-    accum_grad += g0 * a0;
+    // 5. Ocean elevation (deep basins)
+    let ocean_floor = -5.0 + n_f0 * 1.0;
 
-    // Octave 1
-    let f1 = f0 * 2.0;
-    let a1 = a0 * 0.35;
-    let w1 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
-    let p1 = pos_unit * f1;
-    let n1 = sample_noise(p1);
-    let dx1 = sample_noise(p1 + vec3<f32>(eps, 0.0, 0.0)) - n1;
-    let dy1 = sample_noise(p1 + vec3<f32>(0.0, eps, 0.0)) - n1;
-    let dz1 = sample_noise(p1 + vec3<f32>(0.0, 0.0, eps)) - n1;
-    let g1 = vec3<f32>(dx1, dy1, dz1) / eps;
-    total_disp += n1 * a1 * w1;
-    accum_grad += g1 * a1 * w1;
+    // Mix land elevation (plains vs mountains)
+    let land_elevation = mix(plains, mountain, mountain_factor * mountain_factor);
 
-    // Octave 2
-    let f2 = f1 * 2.0;
-    let a2 = a1 * 0.35;
-    let w2 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
-    let p2 = pos_unit * f2;
-    let n2 = sample_noise(p2);
-    let dx2 = sample_noise(p2 + vec3<f32>(eps, 0.0, 0.0)) - n2;
-    let dy2 = sample_noise(p2 + vec3<f32>(0.0, eps, 0.0)) - n2;
-    let dz2 = sample_noise(p2 + vec3<f32>(0.0, 0.0, eps)) - n2;
-    let g2 = vec3<f32>(dx2, dy2, dz2) / eps;
-    total_disp += n2 * a2 * w2;
-    accum_grad += g2 * a2 * w2;
+    // Mix ocean and land
+    var elevation = mix(ocean_floor, land_elevation, land_mask);
 
-    // Octave 3
-    let f3 = f2 * 2.0;
-    let a3 = a2 * 0.35;
-    let w3 = 0.1 + 1.9 * clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
-    let p3 = pos_unit * f3;
-    let n3 = sample_noise(p3);
-    total_disp += n3 * a3 * w3;
+    // 6. Terracing in mountains
+    let terrace_pattern = sin(elevation * 1.5 + n_f0_4 * 0.4);
+    let terrace_amp = 0.5 * mountain_factor;
+    elevation += terrace_pattern * terrace_amp;
 
-    // Add Sedimentary Terracing Effect on slopes
-    let slope = clamp(length(accum_grad) / (a0 * f0), 0.0, 1.0);
-    let terrace_noise = sample_noise(pos_unit * (f0 * 4.0));
-    let terrace_pattern = sin(total_disp * 1.5 + terrace_noise * 0.4);
-    let terrace_amp = 0.8 * slope * mountain_density;
-    total_disp += terrace_pattern * terrace_amp;
-
-    // Clamp displacement to flat ocean floor
-    total_disp = max(total_disp, -2.5);
-
-    return total_disp;
+    // Scale by globals.noise_amplitude
+    let disp = elevation * (globals.noise_amplitude * 0.025);
+    return DisplacementData(disp, mountain_factor, land_mask, n_f0_15, n_f0);
 }
 
-fn get_heightmap_normal(pos_unit: vec3<f32>) -> vec3<f32> {
+fn get_heightmap_normal(pos_unit: vec3<f32>, h0: f32) -> vec3<f32> {
     let eps = 0.005;
-    let h0 = get_displacement(pos_unit);
-    let h_dx = get_displacement(normalize(pos_unit + vec3<f32>(eps, 0.0, 0.0)));
-    let h_dy = get_displacement(normalize(pos_unit + vec3<f32>(0.0, eps, 0.0)));
-    let h_dz = get_displacement(normalize(pos_unit + vec3<f32>(0.0, 0.0, eps)));
-    let grad = vec3<f32>(h_dx - h0, h_dy - h0, h_dz - h0) / eps;
-    let grad_tangent = grad - dot(grad, pos_unit) * pos_unit;
-    return normalize(pos_unit - grad_tangent);
+    // Find orthogonal tangent vectors
+    var tangent_x = vec3<f32>(1.0, 0.0, 0.0);
+    if (abs(pos_unit.x) > 0.9) {
+        tangent_x = vec3<f32>(0.0, 1.0, 0.0);
+    }
+    tangent_x = normalize(cross(pos_unit, tangent_x));
+    let tangent_y = cross(pos_unit, tangent_x);
+
+    let h1 = get_displacement(normalize(pos_unit + tangent_x * eps)).displacement;
+    let h2 = get_displacement(normalize(pos_unit + tangent_y * eps)).displacement;
+
+    let grad = tangent_x * (h1 - h0) / eps + tangent_y * (h2 - h0) / eps;
+    return normalize(pos_unit - grad);
 }
 
 @vertex
@@ -489,60 +467,137 @@ fn vs_main(@builtin(vertex_index) vertex_id: u32) -> VertexOutput {
     return out;
 }
 
+fn get_biome_color(temp: f32, humid: f32, displacement: f32, slope_weight: f32, mountain_factor: f32) -> vec3<f32> {
+    var color = vec3<f32>(0.0);
+
+    // 1. Climate-based land biomes (Whittaker style)
+    if (temp < 0.2) {
+        // Coldest: Tundra / Ice Sheet
+        if (humid < 0.3) {
+            color = vec3<f32>(0.95, 0.95, 0.98); // Ice sheet (pure white)
+        } else {
+            color = vec3<f32>(0.85, 0.85, 0.88); // Snowy tundra (light grey)
+        }
+    } else if (temp < 0.45) {
+        // Cold temperate: Boreal forest (Taiga) vs Cold desert
+        if (humid < 0.25) {
+            color = vec3<f32>(0.55, 0.50, 0.42); // Cold desert / steppe (pale brownish grey)
+        } else if (humid < 0.6) {
+            color = vec3<f32>(0.10, 0.28, 0.16); // Boreal forest (crisp pine green)
+        } else {
+            color = vec3<f32>(0.08, 0.26, 0.20); // Wet taiga (dark blue-green)
+        }
+    } else if (temp < 0.75) {
+        // Warm temperate: Grasslands, woodlands, seasonal forests
+        if (humid < 0.2) {
+            color = vec3<f32>(0.65, 0.62, 0.46); // Temperate desert / dry grassland (sandy olive)
+        } else if (humid < 0.5) {
+            color = vec3<f32>(0.24, 0.48, 0.20); // Grassy plains / shrubland (lush light green)
+        } else if (humid < 0.8) {
+            color = vec3<f32>(0.12, 0.38, 0.14); // Deciduous forest (rich forest green)
+        } else {
+            color = vec3<f32>(0.08, 0.34, 0.16); // Temperate rainforest (deep green)
+        }
+    } else {
+        // Hot tropical: Deserts, savannas, rainforests
+        if (humid < 0.15) {
+            color = vec3<f32>(0.82, 0.72, 0.55); // Subtropical desert (Sahara golden-sand)
+        } else if (humid < 0.4) {
+            color = vec3<f32>(0.50, 0.52, 0.25); // Savanna (dry golden-green)
+        } else if (humid < 0.65) {
+            color = vec3<f32>(0.14, 0.42, 0.16); // Tropical seasonal forest (bright warm green)
+        } else {
+            color = vec3<f32>(0.02, 0.50, 0.12); // Tropical rainforest / jungle (emerald green)
+        }
+    }
+
+    // 2. Steep Rock Cliffs Override (slope-dependent, modulated by mountain factor to protect plains)
+    let rock_weight = clamp((slope_weight - 0.22) / 0.15, 0.0, 1.0) * clamp(mountain_factor * 1.5, 0.0, 1.0);
+    let rock_terrace = sin(displacement * 1.5) * 0.03;
+    let rock_color = vec3<f32>(0.26, 0.25, 0.24) + vec3<f32>(rock_terrace);
+    color = mix(color, rock_color, rock_weight);
+
+    return color;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let radial_dir = normalize(in.world_position);
-    let normal = get_heightmap_normal(radial_dir);
+    let disp_data = get_displacement(radial_dir);
+    let displacement = disp_data.displacement;
+    let mountain_factor = disp_data.mountain_factor;
+    let land_mask = disp_data.land_mask;
+    let temp_noise = disp_data.temp_noise;
+    let humid_noise = disp_data.humid_noise;
+
+    var normal = radial_dir;
+    if (displacement >= 0.0) {
+        normal = get_heightmap_normal(radial_dir, displacement);
+    }
+
     let view_dir = normalize(view_uniforms.camera_pos - in.world_position);
     let light_dir = normalize(view_uniforms.light_dir);
 
     let diffuse = max(dot(normal, light_dir), 0.0);
     let ambient = view_uniforms.ambient;
 
-    let height = length(in.world_position);
-    let displacement = height - 100.0;
     let slope = 1.0 - dot(normal, radial_dir);
+
+    // Climate Calculations
+    // 1. Temperature: perturbed equator-to-pole gradient
+    let perturbed_dir = normalize(radial_dir + temp_noise * 0.20);
+    let t_base = 1.0 - abs(perturbed_dir.y);
+    // Apply altitude cooling lapse rate (peaks are colder)
+    let temp = clamp(t_base - max(displacement, 0.0) * 0.04, 0.0, 1.0);
+
+    // 2. Humidity: reuse humid_noise (already sampled n_f0)
+    let humid = clamp(humid_noise * 0.5 + 0.5, 0.0, 1.0);
 
     // Multi-biome coloring
     var biome_color = vec3<f32>(0.0);
 
-    // 1. Base biomes based on altitude
-    if (displacement <= -2.48) {
-        // Deep water
-        biome_color = vec3<f32>(0.02, 0.12, 0.28);
-    } else if (displacement <= -1.8) {
-        // Beach / Sand transition
-        let t = (displacement - (-2.48)) / ((-1.8) - (-2.48));
-        biome_color = mix(vec3<f32>(0.02, 0.12, 0.28), vec3<f32>(0.76, 0.68, 0.52), t);
-    } else if (displacement <= 4.0) {
-        // Grass / Plains transition
-        let t = (displacement - (-1.8)) / (4.0 - (-1.8));
-        biome_color = mix(vec3<f32>(0.76, 0.68, 0.52), vec3<f32>(0.18, 0.34, 0.14), t);
-    } else if (displacement <= 14.0) {
-        // Highlands / Foothills transition
-        let t = (displacement - 4.0) / (14.0 - 4.0);
-        biome_color = mix(vec3<f32>(0.18, 0.34, 0.14), vec3<f32>(0.32, 0.32, 0.18), t);
+    if (displacement < 0.0) {
+        // Ocean: color based on temperature and depth
+        let cold_ocean = vec3<f32>(0.06, 0.10, 0.18);
+        let warm_ocean = vec3<f32>(0.01, 0.38, 0.46);
+        let base_ocean = mix(cold_ocean, warm_ocean, temp);
+        
+        // Deepen the ocean color based on distance from land (smooth land_mask continental shelf)
+        let depth_factor = clamp(1.0 - land_mask, 0.0, 1.0);
+        let deep_ocean = vec3<f32>(0.005, 0.02, 0.08); // very dark navy
+        
+        biome_color = mix(base_ocean, deep_ocean, depth_factor * 0.9);
+    } else if (displacement < 0.05) {
+        // Beach: transition based on temperature
+        let t_beach = displacement / 0.05;
+        
+        let cold_beach = vec3<f32>(0.25, 0.24, 0.24); // volcanic black sand
+        let warm_beach = vec3<f32>(0.76, 0.68, 0.52); // golden sand
+        let tropical_beach = vec3<f32>(0.86, 0.83, 0.76); // white sand
+        
+        var beach_color = vec3<f32>(0.0);
+        if (temp < 0.35) {
+            beach_color = cold_beach;
+        } else if (temp < 0.7) {
+            beach_color = warm_beach;
+        } else {
+            beach_color = tropical_beach;
+        }
+        
+        // Blend beach with ocean at the shoreline
+        let ocean_color_at_shore = mix(vec3<f32>(0.06, 0.10, 0.18), vec3<f32>(0.01, 0.38, 0.46), temp);
+        biome_color = mix(ocean_color_at_shore, beach_color, t_beach);
     } else {
-        // High peaks
-        biome_color = vec3<f32>(0.32, 0.32, 0.18);
+        // Land
+        biome_color = get_biome_color(temp, humid, displacement, slope, mountain_factor);
     }
-
-    // 2. Steep Rock Cliffs (slope-dependent)
-    let rock_weight = clamp((slope - 0.12) / 0.10, 0.0, 1.0);
-    let rock_terrace = sin(displacement * 1.5) * 0.04;
-    let rock_color = vec3<f32>(0.24, 0.24, 0.24) + vec3<f32>(rock_terrace);
-    biome_color = mix(biome_color, rock_color, rock_weight);
-
-    // 3. Snow caps on flat areas at high elevations
-    let snow_weight = clamp((displacement - 16.0) / 4.0, 0.0, 1.0) * (1.0 - rock_weight);
-    biome_color = mix(biome_color, vec3<f32>(0.95, 0.95, 0.98), snow_weight);
 
     // Shading / Lighting
     let shading = diffuse + ambient;
     var face_color = biome_color * shading;
 
     // 4. Specular highlight on water
-    if (displacement <= -2.48) {
+    if (displacement < 0.0) {
         let half_dir = normalize(light_dir + view_dir);
         let specular = pow(max(dot(normal, half_dir), 0.0), 64.0) * 0.7;
         face_color = face_color + vec3<f32>(specular);
@@ -568,8 +623,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let d = fwidth(in.barycentric);
         let a3 = smoothstep(vec3<f32>(0.0), d * 1.2, in.barycentric);
         let edge_factor = min(a3.x, min(a3.y, a3.z));
-        let wireframe_color = vec3<f32>(0.0, 0.8, 0.5); // Subtle dark cyan-green
-        final_color = mix(wireframe_color, final_terrain_color, edge_factor);
+        let wireframe_color = vec3<f32>(1.0, 1.0, 1.0); // White
+        let blend_factor = mix(0.5, 1.0, edge_factor);
+        final_color = mix(wireframe_color, final_terrain_color, blend_factor);
     }
 
     return vec4<f32>(final_color, 1.0);
