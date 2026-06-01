@@ -84,16 +84,11 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     // mountain_factor: high altitude areas smoothly become mountains
     let mountain_factor = clamp((h - 0.15) * 3.0, 0.0, 1.0) * land_mask;
 
-    var elevation = 0.0;
-    if (h < sea_level) {
-        // Ocean floor: scaled basin
-        elevation = -5.0 + h * 2.5;
-    } else {
-        // Land: plains vs mountains
-        let plains = h * 1.5 + 0.25;
-        let mountain = h * 1.5 + pow(h, 2.0) * 15.0;
-        elevation = mix(plains, mountain, mountain_factor * mountain_factor);
-    }
+    // Continuous elevation: h maps smoothly through sea level
+    // Base term is linear (continuous at h=0), mountain amplification uses max(h,0)^2
+    // which has both value=0 and derivative=0 at h=0, guaranteeing C1 continuity
+    let h_land = max(h, 0.0);
+    var elevation = h * 1.5 + h_land * h_land * mountain_factor * 12.0;
 
     // 6. Terracing in mountains
     let terrace_pattern = sin(elevation * 1.5 + n_f0_4 * 0.4);
