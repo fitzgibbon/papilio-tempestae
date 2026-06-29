@@ -30,9 +30,27 @@ fn step_vec3(edge: Vec3, x: Vec3) -> Vec3 {
 
 fn sign_vec3(v: Vec3) -> Vec3 {
     Vec3::new(
-        if v.x < 0.0 { -1.0 } else if v.x > 0.0 { 1.0 } else { 0.0 },
-        if v.y < 0.0 { -1.0 } else if v.y > 0.0 { 1.0 } else { 0.0 },
-        if v.z < 0.0 { -1.0 } else if v.z > 0.0 { 1.0 } else { 0.0 },
+        if v.x < 0.0 {
+            -1.0
+        } else if v.x > 0.0 {
+            1.0
+        } else {
+            0.0
+        },
+        if v.y < 0.0 {
+            -1.0
+        } else if v.y > 0.0 {
+            1.0
+        } else {
+            0.0
+        },
+        if v.z < 0.0 {
+            -1.0
+        } else if v.z > 0.0 {
+            1.0
+        } else {
+            0.0
+        },
     )
 }
 
@@ -100,7 +118,9 @@ fn open_simplex2_base(x_coord: Vec3) -> f32 {
     // Gradient hashes
     let mut hashes = permute_opensimplex2(mod289_vec4(Vec4::new(v1.x, v2.x, v3.x, v4.x)));
     hashes = permute_opensimplex2(mod289_vec4(hashes + Vec4::new(v1.y, v2.y, v3.y, v4.y)));
-    hashes = mod48_vec4(permute_opensimplex2(mod289_vec4(hashes + Vec4::new(v1.z, v2.z, v3.z, v4.z))));
+    hashes = mod48_vec4(permute_opensimplex2(mod289_vec4(
+        hashes + Vec4::new(v1.z, v2.z, v3.z, v4.z),
+    )));
 
     // Gradient extrapolations & kernel function
     let dots = Vec4::new(d1.dot(d1), d2.dot(d2), d3.dot(d3), d4.dot(d4));

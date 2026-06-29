@@ -8,36 +8,50 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let result = SpirvBuilder::new("planet-shader", "spirv-unknown-spv1.5")
-        .build()?;
+    let result = SpirvBuilder::new("planet-shader", "spirv-unknown-spv1.5").build()?;
 
     let spv_path = result.module.unwrap_single();
     let spv_bytes = fs::read(spv_path)?;
 
     // Parse SPIR-V to naga module
-    let module = naga::front::spv::parse_u8_slice(&spv_bytes, &naga::front::spv::Options::default())?;
+    let module =
+        naga::front::spv::parse_u8_slice(&spv_bytes, &naga::front::spv::Options::default())?;
 
     // Validate the module
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
-    ).validate(&module)?;
+    )
+    .validate(&module)?;
 
     // Transpile SPIR-V module to WGSL
-    let wgsl_code = naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())?;
+    let wgsl_code =
+        naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())?;
 
     // Debug print
     fs::write("assets/shaders/raw_transpiled.wgsl", &wgsl_code)?;
 
     // Extract the Vec3Shared struct
-    let struct_start = wgsl_code.find("struct type_1 {").ok_or("Could not find type_1 struct")?;
-    let struct_end = wgsl_code[struct_start..].find("}").ok_or("Could not find end of type_1 struct")? + struct_start + 1;
-    let struct_def = wgsl_code[struct_start..struct_end].replace("struct type_1", "struct Vec3Shared");
+    let struct_start = wgsl_code
+        .find("struct type_1 {")
+        .ok_or("Could not find type_1 struct")?;
+    let struct_end = wgsl_code[struct_start..]
+        .find("}")
+        .ok_or("Could not find end of type_1 struct")?
+        + struct_start
+        + 1;
+    let struct_def =
+        wgsl_code[struct_start..struct_end].replace("struct type_1", "struct Vec3Shared");
 
     // Extract the snoise3_shared function
-    let func_start = wgsl_code.find("fn function(").ok_or("Could not find function definition")?;
-    let func_end = wgsl_code.find("fn function_1(").ok_or("Could not find function_1 definition")?;
-    let func_def = wgsl_code[func_start..func_end].trim()
+    let func_start = wgsl_code
+        .find("fn function(")
+        .ok_or("Could not find function definition")?;
+    let func_end = wgsl_code
+        .find("fn function_1(")
+        .ok_or("Could not find function_1 definition")?;
+    let func_def = wgsl_code[func_start..func_end]
+        .trim()
         .replace("fn function(", "fn snoise3_shared(")
         .replace("type_1", "Vec3Shared");
 
@@ -67,4 +81,3 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-

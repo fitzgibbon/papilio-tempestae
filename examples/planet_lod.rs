@@ -245,6 +245,9 @@ fn update_camera_and_state(
         let n_f0_8 = sample_noise_rust(pos_unit * (f0 * 8.0));
         let n_f0_16 = sample_noise_rust(pos_unit * (f0 * 16.0));
         let n_f0_32 = sample_noise_rust(pos_unit * (f0 * 32.0));
+        let n_f0_64 = sample_noise_rust(pos_unit * (f0 * 64.0));
+        let n_f0_128 = sample_noise_rust(pos_unit * (f0 * 128.0));
+        let n_f0_256 = sample_noise_rust(pos_unit * (f0 * 256.0));
 
         let basin_seed = (-n_f0).max(0.0);
         let basin_mask = smoothstep(0.05, 0.55, basin_seed);
@@ -275,6 +278,21 @@ fn update_camera_and_state(
             + (0.75 + 0.25 * basin_seed) * basin_mask;
         let g5 = 1.0 + basin_mask * (-n_f0_32).max(0.0) * 1.4;
         h += n_f0_32 * 0.03125 * w5 * g5;
+
+        let w6 = (0.2 + 0.8 * (1.0 - n_f0_32.abs())) * (1.0 - basin_mask)
+            + (0.80 + 0.20 * basin_seed) * basin_mask;
+        let g6 = 1.0 + basin_mask * (-n_f0_64).max(0.0) * 1.55;
+        h += n_f0_64 * 0.015625 * w6 * g6;
+
+        let w7 = (0.2 + 0.8 * (1.0 - n_f0_64.abs())) * (1.0 - basin_mask)
+            + (0.85 + 0.15 * basin_seed) * basin_mask;
+        let g7 = 1.0 + basin_mask * (-n_f0_128).max(0.0) * 1.70;
+        h += n_f0_128 * 0.0078125 * w7 * g7;
+
+        let w8 = (0.2 + 0.8 * (1.0 - n_f0_128.abs())) * (1.0 - basin_mask)
+            + (0.90 + 0.10 * basin_seed) * basin_mask;
+        let g8 = 1.0 + basin_mask * (-n_f0_256).max(0.0) * 1.85;
+        h += n_f0_256 * 0.00390625 * w8 * g8;
 
         let land_mask = (h * 10.0).clamp(0.0, 1.0);
         let mountain_factor = ((h - 0.15) * 3.0).clamp(0.0, 1.0) * land_mask;
@@ -996,7 +1014,7 @@ fn prepare_uniforms(
     let view = ViewUniform {
         view_proj,
         light_dir: Vec3::new(1.0, 1.0, 1.0).normalize(),
-        ambient: 0.15,
+        ambient: 0.03,
         camera_pos,
         show_wireframe,
     };

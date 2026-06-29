@@ -383,6 +383,9 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let n_f0_8 = sample_noise(pos_unit * (f0 * 8.0));
     let n_f0_16 = sample_noise(pos_unit * (f0 * 16.0));
     let n_f0_32 = sample_noise(pos_unit * (f0 * 32.0));
+    let n_f0_64 = sample_noise(pos_unit * (f0 * 64.0));
+    let n_f0_128 = sample_noise(pos_unit * (f0 * 128.0));
+    let n_f0_256 = sample_noise(pos_unit * (f0 * 256.0));
 
     let basin_seed = max(-n_f0, 0.0);
     let basin_mask = smoothstep(0.05, 0.55, basin_seed);
@@ -409,6 +412,18 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let g5 = 1.0 + basin_mask * max(-n_f0_32, 0.0) * 1.4;
     h += n_f0_32 * 0.03125 * w5 * g5;
 
+    let w6 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_32)), 0.80 + 0.20 * basin_seed, basin_mask);
+    let g6 = 1.0 + basin_mask * max(-n_f0_64, 0.0) * 1.55;
+    h += n_f0_64 * 0.015625 * w6 * g6;
+
+    let w7 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_64)), 0.85 + 0.15 * basin_seed, basin_mask);
+    let g7 = 1.0 + basin_mask * max(-n_f0_128, 0.0) * 1.70;
+    h += n_f0_128 * 0.0078125 * w7 * g7;
+
+    let w8 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_128)), 0.90 + 0.10 * basin_seed, basin_mask);
+    let g8 = 1.0 + basin_mask * max(-n_f0_256, 0.0) * 1.85;
+    h += n_f0_256 * 0.00390625 * w8 * g8;
+
     let sea_level = 0.0;
     let land_mask = clamp((h - sea_level) * 10.0, 0.0, 1.0);
     let mountain_factor = clamp((h - 0.15) * 3.0, 0.0, 1.0) * land_mask;
@@ -434,8 +449,54 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     return DisplacementData(disp, mountain_factor, land_mask, temp_noise, humid_noise);
 }
 
+fn get_displacement_shadow(pos_unit: vec3<f32>) -> f32 {
+    let f0 = globals.noise_frequency;
+
+    let n_f0 = sample_noise(pos_unit * f0);
+    let n_f0_2 = sample_noise(pos_unit * (f0 * 2.0));
+    let n_f0_4 = sample_noise(pos_unit * (f0 * 4.0));
+    let n_f0_8 = sample_noise(pos_unit * (f0 * 8.0));
+
+    let basin_seed = max(-n_f0, 0.0);
+    let basin_mask = smoothstep(0.05, 0.55, basin_seed);
+
+    var h = n_f0;
+
+    let w1 = mix(0.2 + 0.8 * (1.0 - abs(n_f0)), 0.55 + 0.45 * basin_seed, basin_mask);
+    let g1 = 1.0 + basin_mask * max(-n_f0_2, 0.0) * 0.75;
+    h += n_f0_2 * 0.5 * w1 * g1;
+
+    let w2 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_2)), 0.6 + 0.4 * basin_seed, basin_mask);
+    let g2 = 1.0 + basin_mask * max(-n_f0_4, 0.0) * 0.9;
+    h += n_f0_4 * 0.25 * w2 * g2;
+
+    let w3 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_4)), 0.65 + 0.35 * basin_seed, basin_mask);
+    let g3 = 1.0 + basin_mask * max(-n_f0_8, 0.0) * 1.1;
+    h += n_f0_8 * 0.125 * w3 * g3;
+
+    let sea_level = 0.0;
+    let land_mask = clamp((h - sea_level) * 10.0, 0.0, 1.0);
+    let mountain_factor = clamp((h - 0.15) * 3.0, 0.0, 1.0) * land_mask;
+
+    let h_land = max(h, 0.0);
+    let ocean_depth = max(-h, 0.0);
+    let ocean_mask = smoothstep(0.02, 0.35, ocean_depth);
+    let trench_noise = 0.55 * max(-n_f0_8, 0.0);
+    let trench_mask = ocean_mask * smoothstep(0.18, 0.55, trench_noise);
+
+    var elevation = h * 1.5 + h_land * h_land * mountain_factor * 12.0;
+    elevation -= ocean_depth * ocean_depth * (2.4 + 2.0 * basin_mask);
+    elevation -= trench_mask * (1.2 + ocean_depth * 2.0);
+
+    let terrace_pattern = sin(elevation * 1.5 + n_f0_4 * 0.4);
+    let terrace_amp = 0.5 * mountain_factor;
+    elevation += terrace_pattern * terrace_amp;
+
+    return elevation * (globals.noise_amplitude * 0.025);
+}
+
 fn get_heightmap_normal(pos_unit: vec3<f32>, h0: f32) -> vec3<f32> {
-    let eps = 0.005;
+    let eps = 0.0002;
     // Find orthogonal tangent vectors
     var tangent_x = vec3<f32>(1.0, 0.0, 0.0);
     if (abs(pos_unit.x) > 0.9) {
@@ -546,8 +607,34 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let view_dir = normalize(view_uniforms.camera_pos - in.world_position);
     let light_dir = normalize(view_uniforms.light_dir);
 
-    let diffuse = max(dot(normal, light_dir), 0.0);
-    let ambient = view_uniforms.ambient;
+    var shadow_factor = 1.0;
+    let N_dot_L = dot(normal, light_dir);
+    if (N_dot_L > 0.0) {
+        let num_steps = 10u;
+        let step_size = 1.2;
+        var current_pos = in.world_position + light_dir * 0.8;
+
+        for (var i = 0u; i < num_steps; i = i + 1u) {
+            let dir = normalize(current_pos - globals.planet_center);
+            let height_ray = length(current_pos - globals.planet_center) - globals.planet_radius;
+            let height_terrain = get_displacement_shadow(dir);
+
+            let h_diff = height_ray - height_terrain;
+            if (h_diff < 0.0) {
+                shadow_factor = 0.0;
+                break;
+            }
+            let t = 0.8 + f32(i) * step_size;
+            shadow_factor = min(shadow_factor, 18.0 * h_diff / t);
+            current_pos = current_pos + light_dir * step_size;
+        }
+    } else {
+        shadow_factor = 0.0;
+    }
+
+    let diffuse = max(N_dot_L, 0.0) * shadow_factor;
+    let ambient_factor = view_uniforms.ambient * (0.5 * (dot(normal, radial_dir) + 1.0));
+    let sky_light = vec3<f32>(0.65, 0.80, 1.0) * ambient_factor;
 
     let slope = 1.0 - dot(normal, radial_dir);
 
@@ -592,8 +679,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     // Shading / Lighting
-    let shading = diffuse + ambient;
-    var face_color = biome_color * shading;
+    let shading = diffuse + ambient_factor;
+    var face_color = biome_color * diffuse + biome_color * sky_light;
 
     // Rayleigh scattering (atmospheric rim glow)
     let rim = pow(1.0 - max(dot(view_dir, radial_dir), 0.0), 4.0);

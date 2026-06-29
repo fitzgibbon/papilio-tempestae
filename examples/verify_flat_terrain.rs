@@ -8,18 +8,43 @@ const Z: f32 = 0.8506508083520399_f32;
 
 fn get_base_vertices() -> [Vec3; 12] {
     [
-        Vec3::new(-X, Z, 0.0), Vec3::new(X, Z, 0.0), Vec3::new(-X, -Z, 0.0), Vec3::new(X, -Z, 0.0),
-        Vec3::new(0.0, -X, Z), Vec3::new(0.0, X, Z), Vec3::new(0.0, -X, -Z), Vec3::new(0.0, X, -Z),
-        Vec3::new(Z, 0.0, -X), Vec3::new(Z, 0.0, X), Vec3::new(-Z, 0.0, -X), Vec3::new(-Z, 0.0, X)
+        Vec3::new(-X, Z, 0.0),
+        Vec3::new(X, Z, 0.0),
+        Vec3::new(-X, -Z, 0.0),
+        Vec3::new(X, -Z, 0.0),
+        Vec3::new(0.0, -X, Z),
+        Vec3::new(0.0, X, Z),
+        Vec3::new(0.0, -X, -Z),
+        Vec3::new(0.0, X, -Z),
+        Vec3::new(Z, 0.0, -X),
+        Vec3::new(Z, 0.0, X),
+        Vec3::new(-Z, 0.0, -X),
+        Vec3::new(-Z, 0.0, X),
     ]
 }
 
 fn get_base_faces() -> [[usize; 3]; 20] {
     [
-        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
-        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
-        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
-        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ]
 }
 
@@ -32,13 +57,13 @@ fn ray_intersects_triangle(p: Vec3, A: Vec3, B: Vec3, C: Vec3) -> Option<(f32, f
     if a.abs() < 1e-8 {
         return None;
     }
-    
+
     let normal = e1.cross(e2);
     let det = -p.dot(normal);
     if det.abs() < 1e-8 {
         return None;
     }
-    
+
     // Solve for k, u, v:
     let k = (-A.dot(normal)) / det;
     if k < 0.0 {
@@ -68,9 +93,7 @@ fn get_noise_height(pos_unit: Vec3) -> f32 {
     let mut total_disp = 0.0f32;
     let mut accum_grad = Vec3::ZERO;
 
-    let sample_noise_rust = |p: Vec3| -> f32 {
-        planet_shader::snoise3(p)
-    };
+    let sample_noise_rust = |p: Vec3| -> f32 { planet_shader::snoise3(p) };
 
     let f_mask = noise_frequency * 0.4;
     let n_mask = sample_noise_rust(pos_unit * f_mask);
@@ -161,12 +184,7 @@ fn find_leaf_triangle(p: Vec3, A: Vec3, B: Vec3, C: Vec3, depth: u32) -> (Vec3, 
     let m1 = (B + C).normalize();
     let m2 = (C + A).normalize();
 
-    let sub_tris = [
-        (A, m0, m2),
-        (B, m1, m0),
-        (C, m2, m1),
-        (m0, m1, m2),
-    ];
+    let sub_tris = [(A, m0, m2), (B, m1, m0), (C, m2, m1), (m0, m1, m2)];
 
     for (sa, sb, sc) in sub_tris {
         if ray_intersects_triangle(p, sa, sb, sc).is_some() {
@@ -245,7 +263,7 @@ fn main() {
         // Intersection along ray: k * p
         // (k * p - da) . normal = 0 => k = (da . normal) / (p . normal)
         let k = da.dot(normal) / p.dot(normal);
-        
+
         let h_flat = k;
         let h_curved = get_noise_height(p);
         let diff = h_flat - h_curved;
@@ -266,7 +284,7 @@ fn main() {
             valley_diffs.push(diff);
         }
     }
-    
+
     // Evaluate at the starting position
     let start_pos = Vec3::new(0.0, 0.1f32.sin(), 0.1f32.cos()).normalize();
     let mut base_tri = None;
@@ -301,12 +319,25 @@ fn main() {
     println!("COMPARISON STATS: FLAT TRIANGLE vs CURVED HEIGHTMAP");
     println!("==================================================");
     println!("Average absolute difference: {:.8}", total_diff / 5000.0);
-    println!("Maximum positive difference (Flat > Curved): {:.8}", max_diff_val);
-    println!("Maximum negative difference (Flat < Curved): {:.8}", min_diff_val);
-    
+    println!(
+        "Maximum positive difference (Flat > Curved): {:.8}",
+        max_diff_val
+    );
+    println!(
+        "Maximum negative difference (Flat < Curved): {:.8}",
+        min_diff_val
+    );
+
     let mean_peak_diff: f32 = peak_diffs.iter().sum::<f32>() / (peak_diffs.len() as f32).max(1.0);
-    let mean_valley_diff: f32 = valley_diffs.iter().sum::<f32>() / (valley_diffs.len() as f32).max(1.0);
-    println!("Mean difference at PEAKS (noise > 0.8):   {:.8}", mean_peak_diff);
-    println!("Mean difference at VALLEYS (noise < -0.8): {:.8}", mean_valley_diff);
+    let mean_valley_diff: f32 =
+        valley_diffs.iter().sum::<f32>() / (valley_diffs.len() as f32).max(1.0);
+    println!(
+        "Mean difference at PEAKS (noise > 0.8):   {:.8}",
+        mean_peak_diff
+    );
+    println!(
+        "Mean difference at VALLEYS (noise < -0.8): {:.8}",
+        mean_valley_diff
+    );
     println!("==================================================\n");
 }

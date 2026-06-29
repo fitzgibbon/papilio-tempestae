@@ -13,6 +13,9 @@ struct GlobalsUniform {
 }
 
 fn main() {
-    println!("GlobalsUniform ShaderType size: {}", GlobalsUniform::min_size());
+    println!(
+        "GlobalsUniform ShaderType size: {}",
+        GlobalsUniform::min_size()
+    );
     // We can run this to see if it compiles and verify the size.
 }

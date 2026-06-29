@@ -32,6 +32,12 @@ struct Triangle {
     v2: vec4<f32>,
 }
 
+struct Tri {
+    v0: vec3<f32>,
+    v1: vec3<f32>,
+    v2: vec3<f32>,
+}
+
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var<storage, read_write> out_vertices: array<VertexOutput>;
 @group(0) @binding(2) var<storage, read_write> indirect_args: DrawIndirectArgs;
@@ -70,6 +76,9 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let n_f0_8 = sample_noise(pos_unit * (f0 * 8.0));
     let n_f0_16 = sample_noise(pos_unit * (f0 * 16.0));
     let n_f0_32 = sample_noise(pos_unit * (f0 * 32.0));
+    let n_f0_64 = sample_noise(pos_unit * (f0 * 64.0));
+    let n_f0_128 = sample_noise(pos_unit * (f0 * 128.0));
+    let n_f0_256 = sample_noise(pos_unit * (f0 * 256.0));
 
     let basin_seed = max(-n_f0, 0.0);
     let basin_mask = smoothstep(0.05, 0.55, basin_seed);
@@ -95,6 +104,18 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let w5 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_16)), 0.75 + 0.25 * basin_seed, basin_mask);
     let g5 = 1.0 + basin_mask * max(-n_f0_32, 0.0) * 1.4;
     h += n_f0_32 * 0.03125 * w5 * g5;
+
+    let w6 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_32)), 0.80 + 0.20 * basin_seed, basin_mask);
+    let g6 = 1.0 + basin_mask * max(-n_f0_64, 0.0) * 1.55;
+    h += n_f0_64 * 0.015625 * w6 * g6;
+
+    let w7 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_64)), 0.85 + 0.15 * basin_seed, basin_mask);
+    let g7 = 1.0 + basin_mask * max(-n_f0_128, 0.0) * 1.70;
+    h += n_f0_128 * 0.0078125 * w7 * g7;
+
+    let w8 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_128)), 0.90 + 0.10 * basin_seed, basin_mask);
+    let g8 = 1.0 + basin_mask * max(-n_f0_256, 0.0) * 1.85;
+    h += n_f0_256 * 0.00390625 * w8 * g8;
 
     let sea_level = 0.0;
     let land_mask = clamp((h - sea_level) * 10.0, 0.0, 1.0);
@@ -160,6 +181,7 @@ fn main(
 
     let center = (A + B + C) / 3.0;
     let world_center = get_displaced_vertex(normalize(center));
+    let lod_center = globals.planet_center + normalize(center) * globals.planet_radius;
     let bounding_radius = max(distance(center, A), max(distance(center, B), distance(center, C))) * globals.planet_radius + globals.noise_amplitude;
 
     // 1. Frustum Culling
@@ -178,7 +200,7 @@ fn main(
     }
 
     // 2. Dynamic LOD based on distance to camera
-    let dist_to_cam = distance(globals.camera_pos, world_center);
+    let dist_to_cam = distance(globals.camera_pos, lod_center);
 
     // Split threshold halves at each depth level
     let split_dist = globals.lod_split_factor / pow(2.0, f32(pass_uniforms.depth));
@@ -203,22 +225,95 @@ fn main(
             output_queue[out_idx + 3u] = Triangle(m0, m1, m2);
         }
     } else {
-        // Output leaf triangle to vertex buffer
-        let p1 = get_displaced_vertex(A);
-        let p2 = get_displaced_vertex(B);
-        let p3 = get_displaced_vertex(C);
+        let center = (A + B + C) / 3.0;
+        let c_tri = normalize(center);
 
-        // Flat normal
-        let flat_normal = normalize(cross(p2 - p1, p3 - p1));
+        // Edge 0: AB
+        let n_ab = normalize(cross(A, B));
+        let c_ab = normalize(c_tri - 2.0 * dot(c_tri, n_ab) * n_ab);
+        let dist_ab = distance(globals.camera_pos, globals.planet_center + c_ab * globals.planet_radius);
+        let split0 = dist_ab < split_dist && pass_uniforms.depth < 10u;
 
-        // Allocate slots in the vertex buffer
-        let v_start = atomicAdd(&indirect_args.vertex_count, 3u);
+        // Edge 1: BC
+        let n_bc = normalize(cross(B, C));
+        let c_bc = normalize(c_tri - 2.0 * dot(c_tri, n_bc) * n_bc);
+        let dist_bc = distance(globals.camera_pos, globals.planet_center + c_bc * globals.planet_radius);
+        let split1 = dist_bc < split_dist && pass_uniforms.depth < 10u;
 
-        // Prevent vertex buffer overflow (MAX_VERTICES = 8388608)
-        if (v_start + 3u <= 8388608u) {
-            out_vertices[v_start] = VertexOutput(vec4<f32>(p1, 1.0), vec4<f32>(flat_normal, 0.0));
-            out_vertices[v_start + 1u] = VertexOutput(vec4<f32>(p2, 1.0), vec4<f32>(flat_normal, 0.0));
-            out_vertices[v_start + 2u] = VertexOutput(vec4<f32>(p3, 1.0), vec4<f32>(flat_normal, 0.0));
+        // Edge 2: CA
+        let n_ca = normalize(cross(C, A));
+        let c_ca = normalize(c_tri - 2.0 * dot(c_tri, n_ca) * n_ca);
+        let dist_ca = distance(globals.camera_pos, globals.planet_center + c_ca * globals.planet_radius);
+        let split2 = dist_ca < split_dist && pass_uniforms.depth < 10u;
+
+        var tris: array<Tri, 4>;
+        var count_tris = 0u;
+
+        if (split0 && split1 && split2) {
+            let m0 = normalize(A + B);
+            let m1 = normalize(B + C);
+            let m2 = normalize(C + A);
+            tris[0] = Tri(A, m0, m2);
+            tris[1] = Tri(m0, B, m1);
+            tris[2] = Tri(m2, m1, C);
+            tris[3] = Tri(m0, m1, m2);
+            count_tris = 4u;
+        } else if (split0 && split1) {
+            let m0 = normalize(A + B);
+            let m1 = normalize(B + C);
+            tris[0] = Tri(A, m0, C);
+            tris[1] = Tri(m0, m1, C);
+            tris[2] = Tri(m0, B, m1);
+            count_tris = 3u;
+        } else if (split1 && split2) {
+            let m1 = normalize(B + C);
+            let m2 = normalize(C + A);
+            tris[0] = Tri(A, B, m2);
+            tris[1] = Tri(B, m1, m2);
+            tris[2] = Tri(m1, C, m2);
+            count_tris = 3u;
+        } else if (split2 && split0) {
+            let m0 = normalize(A + B);
+            let m2 = normalize(C + A);
+            tris[0] = Tri(A, m0, m2);
+            tris[1] = Tri(m0, B, C);
+            tris[2] = Tri(m2, m0, C);
+            count_tris = 3u;
+        } else if (split0) {
+            let m0 = normalize(A + B);
+            tris[0] = Tri(A, m0, C);
+            tris[1] = Tri(m0, B, C);
+            count_tris = 2u;
+        } else if (split1) {
+            let m1 = normalize(B + C);
+            tris[0] = Tri(A, B, m1);
+            tris[1] = Tri(A, m1, C);
+            count_tris = 2u;
+        } else if (split2) {
+            let m2 = normalize(C + A);
+            tris[0] = Tri(A, B, m2);
+            tris[1] = Tri(B, C, m2);
+            count_tris = 2u;
+        } else {
+            tris[0] = Tri(A, B, C);
+            count_tris = 1u;
+        }
+
+        let v_start = atomicAdd(&indirect_args.vertex_count, 3u * count_tris);
+
+        if (v_start + 3u * count_tris <= 8388608u) {
+            for (var i = 0u; i < count_tris; i = i + 1u) {
+                let t = tris[i];
+                let p1 = get_displaced_vertex(t.v0);
+                let p2 = get_displaced_vertex(t.v1);
+                let p3 = get_displaced_vertex(t.v2);
+                let flat_normal = normalize(cross(p2 - p1, p3 - p1));
+
+                let idx = v_start + i * 3u;
+                out_vertices[idx] = VertexOutput(vec4<f32>(p1, 1.0), vec4<f32>(flat_normal, 0.0));
+                out_vertices[idx + 1u] = VertexOutput(vec4<f32>(p2, 1.0), vec4<f32>(flat_normal, 0.0));
+                out_vertices[idx + 2u] = VertexOutput(vec4<f32>(p3, 1.0), vec4<f32>(flat_normal, 0.0));
+            }
         }
     }
 }
