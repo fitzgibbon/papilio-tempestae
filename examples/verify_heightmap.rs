@@ -1,5 +1,8 @@
 // Verification script to run wgpu compute shader on random points and compare GPU vs CPU heightmap/noise.
 
+use bevy::shader::ShaderDefVal;
+use naga_oil::compose::{Composer, NagaModuleDescriptor, ShaderDefValue};
+use papilio_tempestae::quality::{Native, QualityProfile};
 use planet_shader::glam::Vec3;
 use wgpu::util::DeviceExt;
 
@@ -61,9 +64,26 @@ async fn run() {
     let shader_source = std::fs::read_to_string("assets/shaders/terrain.wgsl")
         .expect("Failed to read terrain.wgsl");
 
+    let shader_defs = Native::shader_defs()
+        .into_iter()
+        .map(|def| match def {
+            ShaderDefVal::Bool(name, v) => (name, ShaderDefValue::Bool(v)),
+            ShaderDefVal::Int(name, v) => (name, ShaderDefValue::Int(v)),
+            ShaderDefVal::UInt(name, v) => (name, ShaderDefValue::UInt(v)),
+        })
+        .collect();
+    let module = Composer::default()
+        .make_naga_module(NagaModuleDescriptor {
+            source: &shader_source,
+            file_path: "assets/shaders/terrain.wgsl",
+            shader_defs,
+            ..Default::default()
+        })
+        .expect("Failed to preprocess terrain.wgsl");
+
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Terrain Shader"),
-        source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
     });
 
     // Generate 1000 random triangles (3000 vertices) on the unit sphere

@@ -4140,6 +4140,7 @@ dependencies = [
  "bevy",
  "bytemuck",
  "naga 27.0.3",
+ "naga_oil",
  "noiz",
  "planet-shader",
  "spirv-builder",

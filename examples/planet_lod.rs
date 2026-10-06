@@ -14,6 +14,7 @@ use bevy::{
     },
 };
 use bytemuck::{Pod, Zeroable};
+use papilio_tempestae::quality::{self, Active as Quality, QualityProfile};
 
 const SHADER_COMPUTE_PATH: &str = "shaders/terrain.wgsl";
 const SHADER_RENDER_PATH: &str = "shaders/render_shaders.wgsl";
@@ -27,16 +28,31 @@ const PLANET_RADIUS: f32 = 100.0;
 const EYE_HEIGHT: f32 = 0.1;
 const NOISE_FREQUENCY: f32 = 1.5;
 const NOISE_AMPLITUDE: f32 = 40.0;
-const LOD_SPLIT_FACTOR: f32 = 4500.0; // scaled 100x (45.0 * 100.0)
-
-// Maximum buffer capacities scaled up by 128x to support high LOD levels safely
-const MAX_VERTICES: usize = 65536 * 128; // 8,388,608 vertices
-const MAX_QUEUE_SIZE: usize = 2097152; // 2,097,152 triangles max queue size
 
 fn main() {
+    let mut resolution = bevy::window::WindowResolution::default();
+    if let Some(scale) = Quality::SCALE_FACTOR_OVERRIDE {
+        resolution.set_scale_factor_override(Some(scale));
+    }
+
     App::new()
         .add_plugins((
-            DefaultPlugins,
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Papilio Tempestae".into(),
+                        resolution,
+                        canvas: Some("#planet".into()),
+                        fit_canvas_to_parent: true,
+                        prevent_default_event_handling: true,
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    meta_check: bevy::asset::AssetMetaCheck::Never,
+                    ..default()
+                }),
             PlanetRenderPlugin,
             FrameTimeDiagnosticsPlugin::default(),
         ))
@@ -136,8 +152,11 @@ fn setup_scene(
     mut commands: Commands,
     mut cursor_options: Query<&mut bevy::window::CursorOptions>,
 ) {
-    // Grab and lock the cursor at startup so mouselook is active immediately
-    if let Ok(mut cursor) = cursor_options.single_mut() {
+    // Grab and lock the cursor at startup so mouselook is active immediately.
+    // Browsers only grant pointer lock in response to a click.
+    if cfg!(not(target_arch = "wasm32"))
+        && let Ok(mut cursor) = cursor_options.single_mut()
+    {
         cursor.visible = false;
         cursor.grab_mode = bevy::window::CursorGrabMode::Locked;
     }
@@ -223,7 +242,7 @@ fn update_camera_and_state(
     time: Res<Time>,
 ) {
     // 1. Handle KeyQ to quit the application
-    if keyboard.just_pressed(KeyCode::KeyQ) {
+    if cfg!(not(target_arch = "wasm32")) && keyboard.just_pressed(KeyCode::KeyQ) {
         app_exit_events.write(AppExit::Success);
         return;
     }
@@ -246,9 +265,6 @@ fn update_camera_and_state(
         let n_f0_8 = sample_noise_rust(pos_unit * (f0 * 8.0));
         let n_f0_16 = sample_noise_rust(pos_unit * (f0 * 16.0));
         let n_f0_32 = sample_noise_rust(pos_unit * (f0 * 32.0));
-        let n_f0_64 = sample_noise_rust(pos_unit * (f0 * 64.0));
-        let n_f0_128 = sample_noise_rust(pos_unit * (f0 * 128.0));
-        let n_f0_256 = sample_noise_rust(pos_unit * (f0 * 256.0));
 
         let basin_seed = (-n_f0).max(0.0);
         let basin_mask = smoothstep(0.05, 0.55, basin_seed);
@@ -280,20 +296,29 @@ fn update_camera_and_state(
         let g5 = 1.0 + basin_mask * (-n_f0_32).max(0.0) * 1.4;
         h += n_f0_32 * 0.03125 * w5 * g5;
 
-        let w6 = (0.2 + 0.8 * (1.0 - n_f0_32.abs())) * (1.0 - basin_mask)
-            + (0.80 + 0.20 * basin_seed) * basin_mask;
-        let g6 = 1.0 + basin_mask * (-n_f0_64).max(0.0) * 1.55;
-        h += n_f0_64 * 0.015625 * w6 * g6;
+        if Quality::NOISE_OCTAVES >= 7 {
+            let n_f0_64 = sample_noise_rust(pos_unit * (f0 * 64.0));
+            let w6 = (0.2 + 0.8 * (1.0 - n_f0_32.abs())) * (1.0 - basin_mask)
+                + (0.80 + 0.20 * basin_seed) * basin_mask;
+            let g6 = 1.0 + basin_mask * (-n_f0_64).max(0.0) * 1.55;
+            h += n_f0_64 * 0.015625 * w6 * g6;
 
-        let w7 = (0.2 + 0.8 * (1.0 - n_f0_64.abs())) * (1.0 - basin_mask)
-            + (0.85 + 0.15 * basin_seed) * basin_mask;
-        let g7 = 1.0 + basin_mask * (-n_f0_128).max(0.0) * 1.70;
-        h += n_f0_128 * 0.0078125 * w7 * g7;
+            if Quality::NOISE_OCTAVES >= 8 {
+                let n_f0_128 = sample_noise_rust(pos_unit * (f0 * 128.0));
+                let w7 = (0.2 + 0.8 * (1.0 - n_f0_64.abs())) * (1.0 - basin_mask)
+                    + (0.85 + 0.15 * basin_seed) * basin_mask;
+                let g7 = 1.0 + basin_mask * (-n_f0_128).max(0.0) * 1.70;
+                h += n_f0_128 * 0.0078125 * w7 * g7;
 
-        let w8 = (0.2 + 0.8 * (1.0 - n_f0_128.abs())) * (1.0 - basin_mask)
-            + (0.90 + 0.10 * basin_seed) * basin_mask;
-        let g8 = 1.0 + basin_mask * (-n_f0_256).max(0.0) * 1.85;
-        h += n_f0_256 * 0.00390625 * w8 * g8;
+                if Quality::NOISE_OCTAVES >= 9 {
+                    let n_f0_256 = sample_noise_rust(pos_unit * (f0 * 256.0));
+                    let w8 = (0.2 + 0.8 * (1.0 - n_f0_128.abs())) * (1.0 - basin_mask)
+                        + (0.90 + 0.10 * basin_seed) * basin_mask;
+                    let g8 = 1.0 + basin_mask * (-n_f0_256).max(0.0) * 1.85;
+                    h += n_f0_256 * 0.00390625 * w8 * g8;
+                }
+            }
+        }
 
         let land_mask = (h * 10.0).clamp(0.0, 1.0);
         let mountain_factor = ((h - 0.15) * 3.0).clamp(0.0, 1.0) * land_mask;
@@ -544,7 +569,7 @@ fn init_gpu_resources(
     // Each vertex holds position (16 bytes) and normal (16 bytes) = 32 bytes
     let vertex_buffer = render_device.create_buffer(&BufferDescriptor {
         label: Some("Planet Vertex Buffer"),
-        size: (MAX_VERTICES * 32) as u64,
+        size: Quality::MAX_VERTICES as u64 * quality::VERTEX_STRIDE,
         usage: BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
@@ -617,14 +642,14 @@ fn init_gpu_resources(
     // Intermediate queues (Ping-Pong buffers)
     let queue_a = render_device.create_buffer(&BufferDescriptor {
         label: Some("Planet Queue A"),
-        size: (MAX_QUEUE_SIZE * 48) as u64,
+        size: Quality::MAX_QUEUE_SIZE as u64 * quality::TRIANGLE_STRIDE,
         usage: BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
 
     let queue_b = render_device.create_buffer(&BufferDescriptor {
         label: Some("Planet Queue B"),
-        size: (MAX_QUEUE_SIZE * 48) as u64,
+        size: Quality::MAX_QUEUE_SIZE as u64 * quality::TRIANGLE_STRIDE,
         usage: BufferUsages::STORAGE,
         mapped_at_creation: false,
     });
@@ -644,9 +669,9 @@ fn init_gpu_resources(
         mapped_at_creation: false,
     });
 
-    // Static uniform buffers for depth 0..11
+    // Static uniform buffers for depth 0..=MAX_LOD_DEPTH
     let mut pass_buffers = Vec::new();
-    for depth in 0..11 {
+    for depth in 0..=Quality::MAX_LOD_DEPTH {
         let buffer = render_device.create_buffer(&BufferDescriptor {
             label: Some(&format!("Planet Pass Uniforms Depth {}", depth)),
             size: 16,
@@ -654,7 +679,7 @@ fn init_gpu_resources(
             mapped_at_creation: false,
         });
         let pass_uniforms = PassUniforms {
-            depth: depth as u32,
+            depth,
             _pad0: 0,
             _pad1: 0,
             _pad2: 0,
@@ -819,7 +844,7 @@ fn init_gpu_resources(
         shader: compute_shader,
         entry_point: Some(std::borrow::Cow::Borrowed("main")),
         push_constant_ranges: vec![],
-        shader_defs: vec![],
+        shader_defs: Quality::shader_defs(),
         zero_initialize_workgroup_memory: false,
     });
 
@@ -830,7 +855,7 @@ fn init_gpu_resources(
             shader: render_shader.clone(),
             entry_point: Some(std::borrow::Cow::Borrowed("vs_main")),
             buffers: vec![],
-            shader_defs: vec![],
+            shader_defs: Quality::shader_defs(),
         },
         fragment: Some(FragmentState {
             shader: render_shader,
@@ -840,7 +865,7 @@ fn init_gpu_resources(
                 blend: Some(BlendState::REPLACE),
                 write_mask: ColorWrites::ALL,
             })],
-            shader_defs: vec![],
+            shader_defs: Quality::shader_defs(),
         }),
         primitive: PrimitiveState {
             topology: PrimitiveTopology::TriangleList,
@@ -895,7 +920,7 @@ fn init_gpu_resources(
             shader: water_shader.clone(),
             entry_point: Some(std::borrow::Cow::Borrowed("vs_main")),
             buffers: vec![],
-            shader_defs: vec![],
+            shader_defs: Quality::shader_defs(),
         },
         fragment: Some(FragmentState {
             shader: water_shader,
@@ -905,7 +930,7 @@ fn init_gpu_resources(
                 blend: Some(BlendState::ALPHA_BLENDING),
                 write_mask: ColorWrites::ALL,
             })],
-            shader_defs: vec![],
+            shader_defs: Quality::shader_defs(),
         }),
         primitive: PrimitiveState {
             topology: PrimitiveTopology::TriangleList,
@@ -999,7 +1024,7 @@ fn prepare_uniforms(
         planet_center: Vec3::ZERO,
         noise_frequency: NOISE_FREQUENCY,
         noise_amplitude: NOISE_AMPLITUDE,
-        lod_split_factor: LOD_SPLIT_FACTOR,
+        lod_split_factor: Quality::LOD_SPLIT_FACTOR,
         frustum_planes,
     };
     render_globals.0.set(globals);
@@ -1107,8 +1132,8 @@ impl render_graph::Node for PlanetRenderNode {
             return Ok(());
         };
 
-        // 1. Run 11 sequential compute passes to subdivide dynamically
-        for k in 0..11 {
+        // 1. Run sequential compute passes to subdivide dynamically
+        for (k, pass_buffer) in resources.pass_buffers.iter().enumerate() {
             let (input_queue, output_queue, input_counter, output_counter) = if k % 2 == 0 {
                 (
                     &resources.queue_a,
@@ -1138,7 +1163,7 @@ impl render_graph::Node for PlanetRenderNode {
                     render_globals.0.binding().unwrap(),
                     resources.vertex_buffer.as_entire_buffer_binding(),
                     resources.indirect_buffer.as_entire_buffer_binding(),
-                    resources.pass_buffers[k].as_entire_buffer_binding(),
+                    pass_buffer.as_entire_buffer_binding(),
                     resources.base_faces_buffer.as_entire_buffer_binding(),
                     input_queue.as_entire_buffer_binding(),
                     output_queue.as_entire_buffer_binding(),
@@ -1147,8 +1172,8 @@ impl render_graph::Node for PlanetRenderNode {
                 )),
             );
 
-            // Dispatch workgroups (max possible triangles for pass k is 20 * 4^k)
-            let max_triangles = 20 * 4u32.pow(k as u32);
+            // Dispatch workgroups (max possible triangles for pass k is 20 * 4^k, bounded by queue capacity)
+            let max_triangles = (20u64 << (2 * k)).min(Quality::MAX_QUEUE_SIZE as u64) as u32;
             let workgroup_count = max_triangles.div_ceil(64);
             let workgroups_x = workgroup_count.min(65535);
             let workgroups_y = workgroup_count.div_ceil(65535);

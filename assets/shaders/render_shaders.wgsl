@@ -383,9 +383,15 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let n_f0_8 = sample_noise(pos_unit * (f0 * 8.0));
     let n_f0_16 = sample_noise(pos_unit * (f0 * 16.0));
     let n_f0_32 = sample_noise(pos_unit * (f0 * 32.0));
+#if NOISE_OCTAVES >= 7
     let n_f0_64 = sample_noise(pos_unit * (f0 * 64.0));
+#endif
+#if NOISE_OCTAVES >= 8
     let n_f0_128 = sample_noise(pos_unit * (f0 * 128.0));
+#endif
+#if NOISE_OCTAVES >= 9
     let n_f0_256 = sample_noise(pos_unit * (f0 * 256.0));
+#endif
 
     let basin_seed = max(-n_f0, 0.0);
     let basin_mask = smoothstep(0.05, 0.55, basin_seed);
@@ -412,17 +418,23 @@ fn get_displacement(pos_unit: vec3<f32>) -> DisplacementData {
     let g5 = 1.0 + basin_mask * max(-n_f0_32, 0.0) * 1.4;
     h += n_f0_32 * 0.03125 * w5 * g5;
 
+#if NOISE_OCTAVES >= 7
     let w6 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_32)), 0.80 + 0.20 * basin_seed, basin_mask);
     let g6 = 1.0 + basin_mask * max(-n_f0_64, 0.0) * 1.55;
     h += n_f0_64 * 0.015625 * w6 * g6;
+#endif
 
+#if NOISE_OCTAVES >= 8
     let w7 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_64)), 0.85 + 0.15 * basin_seed, basin_mask);
     let g7 = 1.0 + basin_mask * max(-n_f0_128, 0.0) * 1.70;
     h += n_f0_128 * 0.0078125 * w7 * g7;
+#endif
 
+#if NOISE_OCTAVES >= 9
     let w8 = mix(0.2 + 0.8 * (1.0 - abs(n_f0_128)), 0.90 + 0.10 * basin_seed, basin_mask);
     let g8 = 1.0 + basin_mask * max(-n_f0_256, 0.0) * 1.85;
     h += n_f0_256 * 0.00390625 * w8 * g8;
+#endif
 
     let sea_level = 0.0;
     let land_mask = clamp((h - sea_level) * 10.0, 0.0, 1.0);
@@ -610,8 +622,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var shadow_factor = 1.0;
     let N_dot_L = dot(normal, light_dir);
     if (N_dot_L > 0.0) {
-        let num_steps = 10u;
-        let step_size = 1.2;
+        let num_steps = #{SHADOW_STEPS}u;
+        let step_size = 12.0 / f32(num_steps);
         var current_pos = in.world_position + light_dir * 0.8;
 
         for (var i = 0u; i < num_steps; i = i + 1u) {

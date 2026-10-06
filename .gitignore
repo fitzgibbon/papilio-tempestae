@@ -2,3 +2,4 @@
 .direnv/
 src/rust_out
 assets/shaders/raw_transpiled.wgsl
+/dist

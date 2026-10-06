@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Papilio Tempestae</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 14px system-ui, sans-serif; overflow: hidden; }
+    main { position: fixed; inset: 0; }
+    canvas { display: block; width: 100%; height: 100%; outline: none; }
+    #status { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; padding: 16px; pointer-events: none; }
+    #help { position: fixed; right: 15px; bottom: 15px; opacity: 0.7; pointer-events: none; text-align: right; }
+  </style>
+</head>
+<body>
+  <main><canvas id="planet" tabindex="0"></canvas></main>
+  <div id="status">Loading…</div>
+  <div id="help">Click to capture mouse · WASD move · scroll to change altitude · V wireframe · Esc release</div>
+  <script type="module">
+    const status = document.getElementById("status");
+    if (!navigator.gpu) {
+      status.textContent = "This demo needs WebGPU. Try a recent Chrome, Edge, or Firefox, or Safari 26+.";
+    } else {
+      import("./planet_lod.js")
+        .then((m) => m.default())
+        .catch((e) => {
+          // winit unwinds out of the start call by throwing; that is not a failure.
+          if (!String(e).includes("Using exceptions for control flow")) {
+            status.textContent = "Failed to start: " + e;
+            throw e;
+          }
+        });
+      new MutationObserver(() => status.remove()).observe(document.getElementById("planet"), { attributes: true });
+    }
+  </script>
+</body>
+</html>

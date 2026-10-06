@@ -7,8 +7,14 @@ edition = "2024"
 bevy = "*"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 noiz = "*"
-wgpu = "27.0.1"
+wgpu = { version = "27.0.1", features = ["naga-ir"] }
 planet-shader = { path = "planet-shader" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "*", features = ["webgpu"] }
+
+[dev-dependencies]
+naga_oil = { version = "0.20", default-features = false }
 
 [build-dependencies]
 spirv-builder = { git = "https://github.com/Rust-GPU/rust-gpu", branch = "main" }
@@ -23,3 +29,10 @@ members = [
 [patch.crates-io]
 glam = { path = "patches/glam-0.24.2" }
 
+
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
