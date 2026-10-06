@@ -24,7 +24,7 @@ const WATER_VERTEX_COUNT: u32 = 15360;
 
 // Shader configuration constants
 const PLANET_RADIUS: f32 = 100.0;
-const EYE_HEIGHT: f32 = 1.0;
+const EYE_HEIGHT: f32 = 0.1;
 const NOISE_FREQUENCY: f32 = 1.5;
 const NOISE_AMPLITUDE: f32 = 40.0;
 const LOD_SPLIT_FACTOR: f32 = 4500.0; // scaled 100x (45.0 * 100.0)
@@ -156,6 +156,7 @@ fn setup_scene(
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: std::f32::consts::FRAC_PI_2,
+            near: 0.01,
             ..default()
         }),
         Transform::from_xyz(0.0, 0.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
@@ -376,7 +377,7 @@ fn update_camera_and_state(
     for event in mouse_wheel_events.read() {
         scroll += event.y;
     }
-    let zoom_speed = 0.08f32 * camera_state.elevation.max(7.5);
+    let zoom_speed = 0.08f32 * camera_state.elevation.max(0.5);
     camera_state.elevation -= scroll * zoom_speed;
     camera_state.elevation = camera_state.elevation.clamp(0.0, camera_state.max_distance);
 
